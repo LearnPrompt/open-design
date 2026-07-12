@@ -1099,6 +1099,12 @@ button.qf-chip-other:disabled { cursor: default; opacity: 0.6; }
   color: var(--text-muted);
   line-height: 1.4;
 }
+.qf-submit-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
 
 /* Direction-cards picker — used by the second discovery form when the user
    selects "Pick a direction for me". Each card carries a palette swatch

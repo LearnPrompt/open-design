@@ -28,18 +28,19 @@ interface Props {
   // begins with "[form answers — <id>]", we parse it back out and pass it
   // here so the rendered form reflects what was sent.
   submittedAnswers?: Record<string, string | string[]>;
-  // When the form lives in the Questions tab the Continue button owns the
-  // submit, so hide the form's own footer button and report ready-state out.
+  // Embedded hosts may own submission, so the form can hide its footer and
+  // report draft/readiness state outward.
   hideInternalSubmit?: boolean;
   draftAnswers?: Record<string, string | string[]>;
   onReadyChange?: (ready: boolean) => void;
   onDraftChange?: (answers: Record<string, string | string[]>) => void;
   // Fires on each real user interaction with a single question (locked forms
-  // never reach it). Lets the Questions tab host track chip picks.
+  // never reach it), allowing the host to track finite-choice picks.
   onAnswerChange?: (questionId: string, value: string | string[]) => void;
   onSubmit?: (
     text: string,
     answers: Record<string, string | string[]>,
+    source: 'submit' | 'skip',
     files?: QuestionFormFileSubmission[],
   ) => void;
   submitDisabled?: boolean;
@@ -52,7 +53,7 @@ export interface QuestionFormFileSubmission {
   files: File[];
 }
 
-// Lets a parent (the Questions tab Continue button) trigger submission.
+// Lets an embedding host trigger submission.
 export interface QuestionFormHandle {
   submit: () => void;
   // Submit with no answers — backs the "skip all" affordance. Every question
@@ -240,21 +241,20 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
   function handleSubmit() {
     if (locked || !onSubmit) return;
     // Block submit until required fields are answered and selection caps hold.
-    // skipAll() is the only path that intentionally bypasses this (the new
-    // Questions-tab Skip button / countdown).
+    // skipAll() is the only path that intentionally bypasses this.
     if (!ready) return;
     const files = collectFileSubmissions(form, fileAnswers);
     if (files.length > 0) {
-      onSubmit(formatFormAnswers(form, answers), answers, files);
+      onSubmit(formatFormAnswers(form, answers), answers, 'submit', files);
     } else {
-      onSubmit(formatFormAnswers(form, answers), answers);
+      onSubmit(formatFormAnswers(form, answers), answers, 'submit');
     }
   }
 
   function handleSkipAll() {
     if (locked || !onSubmit) return;
     const empty: Record<string, string | string[]> = {};
-    onSubmit(formatFormAnswers(form, empty), empty);
+    onSubmit(formatFormAnswers(form, empty), empty, 'skip');
   }
 
   // Per-question checkbox selection caps must hold.
@@ -264,8 +264,8 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
     return !Array.isArray(v) || v.length <= q.maxSelections;
   });
   // Required questions must carry a non-empty answer. This gates the standard
-  // submit button AND the Questions-tab Continue CTA — only skipAll() bypasses
-  // it on purpose. Without this, main-path forms (the discovery router's
+  // submit button; only skipAll() bypasses it on purpose. Without this,
+  // main-path forms (the discovery router's
   // required taskType/output, the ElevenLabs voice picker) would accept an
   // empty submit and serialize "(skipped)" for fields the rest of the system
   // treats as mandatory.
@@ -595,15 +595,25 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
             <span className="qf-hint">{t('qf.hint')}</span>
           )}
           {!locked ? (
-            <button
-              type="button"
-              className="primary"
-              onClick={handleSubmit}
-              disabled={submitDisabled || !ready}
-              title={!submitDisabled && ready ? t('qf.submitTitle') : t('qf.submitDisabledTitle')}
-            >
-              {form.submitLabel ?? t('qf.submitDefault')}
-            </button>
+            <span className="qf-submit-actions">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={handleSkipAll}
+                disabled={submitDisabled}
+              >
+                {t('questions.skipAll')}
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                onClick={handleSubmit}
+                disabled={submitDisabled || !ready}
+                title={!submitDisabled && ready ? t('qf.submitTitle') : t('qf.submitDisabledTitle')}
+              >
+                {form.submitLabel ?? t('qf.submitDefault')}
+              </Button>
+            </span>
           ) : null}
         </div>
       )}

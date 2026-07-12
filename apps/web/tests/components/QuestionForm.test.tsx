@@ -150,6 +150,7 @@ describe('QuestionFormView', () => {
     expect(onSubmit).toHaveBeenCalledWith(
       '[form answers — elevenlabs-voice]\n- Voice: Rachel — american · female [value: 21m00Tcm4TlvDq8ikWAM]',
       { voice: '21m00Tcm4TlvDq8ikWAM' },
+      'submit',
     );
 
     rerender(
@@ -210,6 +211,7 @@ describe('QuestionFormView', () => {
     expect(onSubmit).toHaveBeenCalledWith(
       expect.stringContaining('- Primary surface: Wearable kiosk'),
       { platform: 'Wearable kiosk' },
+      'submit',
     );
   });
 
@@ -363,10 +365,10 @@ describe('QuestionFormView', () => {
   });
 
   it('marks required fields with the inline indicator even when the footer is hidden', () => {
-    // Panel path (Questions tab): hideInternalSubmit hides the form footer, so
+    // Embedded-host path: hideInternalSubmit hides the form footer, so
     // the inline "*" next to a required label is the only per-field cue that a
     // field is mandatory. A mixed required/optional form must still advertise
-    // which fields block the disabled Continue button.
+    // which fields block the host's disabled Continue button.
     const mixedForm = {
       id: 'discovery',
       title: 'Quick brief',
@@ -544,6 +546,23 @@ describe('QuestionFormView', () => {
         '- Weight: 0',
       ].join('\n'),
       { accent: '#000000', weight: '0' },
+      'submit',
+    );
+  });
+
+  it('keeps Skip beside Submit and bypasses required unanswered fields', () => {
+    const onSubmit = vi.fn();
+    render(<QuestionFormView form={richForm} interactive onSubmit={onSubmit} />);
+
+    expect((screen.getByRole('button', { name: 'Send answers' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all' }));
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.stringContaining('[form answers — discovery]'),
+      {},
+      'skip',
     );
   });
 
