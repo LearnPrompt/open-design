@@ -592,4 +592,76 @@ describe('QuestionFormView', () => {
       [{ questionId: 'assets', questionLabel: 'Reference assets', files: [first, second] }],
     );
   });
+
+  it('renders artifact-aware visual tone cards and preserves stable option values', () => {
+    const onSubmit = vi.fn();
+    render(
+      <QuestionFormView
+        form={checkboxObjectForm}
+        interactive
+        visualStyleContext="deck"
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.getByText('Editorial narrative')).toBeTruthy();
+    expect(screen.getByText('Product keynote')).toBeTruthy();
+    expect(screen.getByText('Soft gradients')).toBeTruthy();
+    expect(document.querySelector('[data-artifact-type="deck"]')).toBeTruthy();
+
+    fireEvent.click(screen.getByLabelText('Editorial narrative'));
+    fireEvent.click(screen.getByRole('button', { name: 'Send answers' }));
+
+    expect(onSubmit.mock.calls[0]?.[1]).toEqual({ tone: ['editorial'] });
+    expect(onSubmit.mock.calls[0]?.[0]).toContain(
+      'Editorial / magazine [value: editorial]',
+    );
+  });
+
+  it('keeps the visual picker compact, shuffles unselected styles, and expands on demand', () => {
+    const galleryForm = {
+      id: 'discovery',
+      title: 'Choose a visual direction',
+      questions: [
+        {
+          id: 'tone',
+          label: 'Visual direction',
+          type: 'checkbox',
+          required: true,
+          allowCustom: true,
+          options: [
+            { label: 'Editorial / magazine', value: 'editorial' },
+            { label: 'Modern minimal', value: 'minimal' },
+            { label: 'Playful / illustrative', value: 'playful' },
+            { label: 'Tech / utility', value: 'utility' },
+            { label: 'Luxury / refined', value: 'luxury' },
+            { label: 'Human / approachable', value: 'human' },
+          ],
+        },
+      ],
+    } as QuestionForm;
+    const { container } = render(
+      <QuestionFormView
+        form={galleryForm}
+        interactive
+        visualStyleContext="deck"
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    const visibleLabels = () =>
+      Array.from(container.querySelectorAll<HTMLInputElement>('.qf-visual-card input')).map(
+        (input) => input.getAttribute('aria-label'),
+      );
+    const firstPage = visibleLabels();
+    expect(firstPage).toHaveLength(4);
+    expect(screen.queryByLabelText('Custom answer')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(visibleLabels()).toHaveLength(4);
+    expect(visibleLabels()).not.toEqual(firstPage);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'View all' })[0]!);
+    expect(visibleLabels()).toHaveLength(6);
+  });
 });

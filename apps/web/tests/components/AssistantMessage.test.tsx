@@ -357,7 +357,7 @@ describe('AssistantMessage thinking blocks', () => {
 });
 
 describe('AssistantMessage question forms', () => {
-  it('renders repeated question forms as one compact Questions banner in chat', () => {
+  it('renders repeated question forms once as an interactive inline form', () => {
     const firstForm = [
       '<question-form id="discovery" title="Quick brief — tailored">',
       JSON.stringify({
@@ -386,7 +386,7 @@ describe('AssistantMessage question forms', () => {
       }),
       '</question-form>',
     ].join('\n');
-    const onOpenQuestions = vi.fn();
+    const onSubmitQuestionForm = vi.fn();
 
     render(
       <AssistantMessage
@@ -400,23 +400,26 @@ describe('AssistantMessage question forms', () => {
         })}
         streaming={false}
         projectId="proj-1"
-        onOpenQuestions={onOpenQuestions}
+        isLast
+        onSubmitQuestionForm={onSubmitQuestionForm}
       />,
     );
 
-    const banners = screen.getAllByTestId('questions-banner');
-    expect(banners).toHaveLength(1);
-    fireEvent.click(banners[0]!);
-    expect(onOpenQuestions).toHaveBeenCalledWith(expect.objectContaining({
-      form: expect.objectContaining({ id: 'discovery', title: 'Quick brief — tailored' }),
-    }));
-    expect(screen.queryByText('Quick brief — tailored')).toBeNull();
-    expect(screen.queryByText('Who is this for?')).toBeNull();
+    expect(screen.getByText('Quick brief — tailored')).toBeTruthy();
+    const audienceInput = document.querySelector('.qf-input');
+    if (!(audienceInput instanceof HTMLInputElement)) throw new Error('expected audience input');
+    fireEvent.change(audienceInput, {
+      target: { value: 'Product evaluators' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send answers' }));
+    expect(onSubmitQuestionForm).toHaveBeenCalledWith(
+      expect.stringContaining('- Who is this for?: Product evaluators'),
+    );
     expect(screen.queryByText('Quick brief — 30 seconds')).toBeNull();
     expect(screen.queryByText('What are we making?')).toBeNull();
   });
 
-  it('renders an answered question banner as a disabled, non-clickable done state', () => {
+  it('collapses answered questions into a readable inline summary', () => {
     const form = [
       '<question-form id="discovery" title="Quick brief — tailored">',
       JSON.stringify({
@@ -431,7 +434,6 @@ describe('AssistantMessage question forms', () => {
       '</question-form>',
     ].join('\n');
 
-    const onOpenQuestions = vi.fn();
     render(
       <AssistantMessage
         message={baseMessage({
@@ -445,24 +447,17 @@ describe('AssistantMessage question forms', () => {
         streaming={false}
         projectId="proj-1"
         nextUserContent={'[form answers for discovery]\n- Who is this for?: Product evaluators'}
-        onOpenQuestions={onOpenQuestions}
       />,
     );
 
-    const banner = screen.getByTestId('questions-banner') as HTMLButtonElement;
-    // Answered: no longer an open affordance — disabled, marked answered, and
-    // clicking it must not re-open the Questions panel.
-    expect(banner.disabled).toBe(true);
-    expect(banner.getAttribute('data-answered')).toBe('true');
-    expect(banner.textContent).toContain('Questions answered');
-    fireEvent.click(banner);
-    expect(onOpenQuestions).not.toHaveBeenCalled();
+    expect(screen.getByTestId('question-form-summary')).toBeTruthy();
+    expect(screen.getByText('Questions answered')).toBeTruthy();
+    expect(screen.getByText('Who is this for?')).toBeTruthy();
+    expect(screen.getByText('Product evaluators')).toBeTruthy();
     expect(screen.queryByText('Quick brief — tailored')).toBeNull();
-    expect(screen.queryByText('Who is this for?')).toBeNull();
-    expect(screen.queryByText('Product evaluators')).toBeNull();
   });
 
-  it('keeps an unanswered question banner clickable', () => {
+  it('does not recommend next steps on the same turn as an inline question form', () => {
     const form = [
       '<question-form id="discovery" title="Quick brief — tailored">',
       JSON.stringify({
@@ -476,31 +471,67 @@ describe('AssistantMessage question forms', () => {
       }),
       '</question-form>',
     ].join('\n');
+    const questionMessage = baseMessage({
+      content: form,
+      events: [{ kind: 'text', text: form } as ChatMessage['events'][number]],
+    });
+    const onNextStepPromptAction = vi.fn();
+    const { rerender } = render(
+      <AssistantMessage
+        message={questionMessage}
+        streaming={false}
+        projectId="proj-1"
+        isLast
+        onNextStepPromptAction={onNextStepPromptAction}
+      />,
+    );
 
-    const onOpenQuestions = vi.fn();
+    expect(screen.queryByTestId('next-step-actions')).toBeNull();
+
+    rerender(
+      <AssistantMessage
+        message={questionMessage}
+        streaming={false}
+        projectId="proj-1"
+        isLast
+        nextUserContent={'[form answers for discovery]\n- Who is this for?: Product evaluators'}
+        onNextStepPromptAction={onNextStepPromptAction}
+      />,
+    );
+    expect(screen.getByTestId('question-form-summary')).toBeTruthy();
+    expect(screen.queryByTestId('next-step-actions')).toBeNull();
+
+    rerender(
+      <AssistantMessage
+        message={baseMessage()}
+        streaming={false}
+        projectId="proj-1"
+        isLast
+        onNextStepPromptAction={onNextStepPromptAction}
+      />,
+    );
+    expect(screen.getByTestId('next-step-actions')).toBeTruthy();
+  });
+
+  it('shows an inline loading frame while a form is streaming', () => {
     render(
       <AssistantMessage
         message={baseMessage({
           events: [
             {
               kind: 'text',
-              text: form,
+              text: 'One quick check:\n<question-form id="discovery" title="Quick brief">\n{"questions":[',
             } as ChatMessage['events'][number],
           ],
         })}
-        streaming={false}
+        streaming
         projectId="proj-1"
-        onOpenQuestions={onOpenQuestions}
+        isLast
       />,
     );
 
-    const banner = screen.getByTestId('questions-banner') as HTMLButtonElement;
-    expect(banner.disabled).toBe(false);
-    expect(banner.getAttribute('data-answered')).toBeNull();
-    fireEvent.click(banner);
-    expect(onOpenQuestions).toHaveBeenCalledWith(expect.objectContaining({
-      form: expect.objectContaining({ id: 'discovery', title: 'Quick brief — tailored' }),
-    }));
+    expect(screen.getByTestId('question-form-loading')).toBeTruthy();
+    expect(screen.getByText('One quick check:')).toBeTruthy();
   });
 });
 

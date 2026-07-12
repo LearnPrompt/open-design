@@ -7,9 +7,16 @@ import {
   type CSSProperties,
 } from 'react';
 import type { ReactNode } from 'react';
+import { Button } from '@open-design/components';
 import { tForLanguageTag, useT } from '../i18n';
 import type { DirectionCard, FormOption, QuestionForm } from '../artifacts/question-form';
 import { formatFormAnswers, formOptionValueForLabel } from '../artifacts/question-form';
+import {
+  visualStyleCardsForOptions,
+  type VisualStyleCard,
+  type VisualStyleContext,
+} from '../runtime/visual-style-catalog';
+import { Icon } from './Icon';
 
 interface Props {
   form: QuestionForm;
@@ -35,6 +42,8 @@ interface Props {
     answers: Record<string, string | string[]>,
     files?: QuestionFormFileSubmission[],
   ) => void;
+  submitDisabled?: boolean;
+  visualStyleContext?: VisualStyleContext;
 }
 
 export interface QuestionFormFileSubmission {
@@ -62,6 +71,8 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
     onDraftChange,
     onAnswerChange,
     onSubmit,
+    submitDisabled = false,
+    visualStyleContext,
   },
   ref,
 ) {
@@ -286,6 +297,10 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
       <div className="question-form-body">
         {form.questions.map((q) => {
           const value = currentAnswers[q.id];
+          const visualStyleCards =
+            visualStyleContext && q.id === 'tone' && q.type === 'checkbox' && q.options
+              ? visualStyleCardsForOptions(visualStyleContext, q.options)
+              : null;
           return (
             <div key={q.id} className="qf-field">
               <label className="qf-label">
@@ -329,7 +344,7 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
                   />
                 </CollapsibleCustomChoice>
               ) : null}
-              {q.type === 'checkbox' && q.options ? (
+              {q.type === 'checkbox' && q.options && !visualStyleCards ? (
                 <div className="qf-options">
                   {q.options.map((opt) => {
                     const arr = Array.isArray(value) ? value : [];
@@ -357,7 +372,21 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
                   {shouldRenderCustomChoice(q) ? renderOtherChip(q) : null}
                 </div>
               ) : null}
-              {q.type === 'checkbox' && q.options && shouldRenderCustomChoice(q) ? (
+              {visualStyleCards && visualStyleContext ? (
+                <VisualStylePicker
+                  cards={visualStyleCards}
+                  context={visualStyleContext}
+                  formId={form.id}
+                  questionId={q.id}
+                  value={Array.isArray(value) ? value : []}
+                  disabled={locked}
+                  onSelect={(next) => update(q.id, [next])}
+                />
+              ) : null}
+              {q.type === 'checkbox' &&
+              q.options &&
+              !visualStyleCards &&
+              shouldRenderCustomChoice(q) ? (
                 <CollapsibleCustomChoice open={customChoiceExpanded(q)}>
                   <CustomChoiceInput
                     label={q.customLabel ?? t('qf.customLabel')}
@@ -570,8 +599,8 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
               type="button"
               className="primary"
               onClick={handleSubmit}
-              disabled={!ready}
-              title={ready ? t('qf.submitTitle') : t('qf.submitDisabledTitle')}
+              disabled={submitDisabled || !ready}
+              title={!submitDisabled && ready ? t('qf.submitTitle') : t('qf.submitDisabledTitle')}
             >
               {form.submitLabel ?? t('qf.submitDefault')}
             </button>
@@ -632,6 +661,221 @@ function CustomChoiceInput({
         onChange={(event) => onChange(event.target.value)}
       />
     </label>
+  );
+}
+
+const VISUAL_STYLE_PAGE_SIZE = 4;
+
+function VisualStylePicker({
+  cards,
+  context,
+  formId,
+  questionId,
+  value,
+  disabled,
+  onSelect,
+}: {
+  cards: VisualStyleCard[];
+  context: VisualStyleContext;
+  formId: string;
+  questionId: string;
+  value: string[];
+  disabled: boolean;
+  onSelect: (value: string) => void;
+}) {
+  const t = useT();
+  const [offset, setOffset] = useState(0);
+  const [expanded, setExpanded] = useState(false);
+  const selected = cards.find((card) => value.includes(card.value));
+  const page = Array.from(
+    { length: Math.min(VISUAL_STYLE_PAGE_SIZE, cards.length) },
+    (_, index) => {
+      const cardIndex = (offset + index) % cards.length;
+      return cards[cardIndex]!;
+    },
+  );
+  const selectedIsVisible = selected ? page.some((card) => card.value === selected.value) : false;
+  const compactCards =
+    selected && !selectedIsVisible
+      ? [selected, ...page.filter((card) => card.value !== selected.value)].slice(
+          0,
+          VISUAL_STYLE_PAGE_SIZE,
+        )
+      : page;
+  const visibleCards = expanded ? cards : compactCards;
+  const remaining = Math.max(0, cards.length - visibleCards.length);
+
+  function shuffle() {
+    if (cards.length <= VISUAL_STYLE_PAGE_SIZE) return;
+    setOffset((current) => (current + VISUAL_STYLE_PAGE_SIZE) % cards.length);
+  }
+
+  return (
+    <div
+      className={`qf-visual-picker${expanded ? ' qf-visual-picker-expanded' : ''}`}
+      data-artifact-type={context}
+    >
+      <div className="qf-visual-toolbar">
+        <Button
+          type="button"
+          variant="ghost"
+          className="qf-visual-toolbar-button"
+          disabled={disabled || cards.length <= VISUAL_STYLE_PAGE_SIZE}
+          onClick={shuffle}
+          title={t('designFiles.refresh')}
+        >
+          <Icon name="refresh" size={13} />
+          <span>{t('designFiles.refresh')}</span>
+        </Button>
+        {!expanded && cards.length > VISUAL_STYLE_PAGE_SIZE ? (
+          <Button
+            type="button"
+            variant="ghost"
+            className="qf-visual-toolbar-button"
+            disabled={disabled}
+            onClick={() => setExpanded(true)}
+          >
+            {t('recentProjects.viewAll')}
+          </Button>
+        ) : null}
+      </div>
+      <div className={expanded ? 'qf-visual-grid' : 'qf-visual-strip'}>
+        {visibleCards.map((card) => (
+          <VisualStyleCardView
+            key={card.value}
+            card={card}
+            context={context}
+            formId={formId}
+            questionId={questionId}
+            selected={value.includes(card.value)}
+            disabled={disabled}
+            onSelect={() => onSelect(card.value)}
+          />
+        ))}
+        {!expanded && remaining > 0 ? (
+          <Button
+            type="button"
+            variant="ghost"
+            className="qf-visual-more"
+            disabled={disabled}
+            aria-label={t('recentProjects.viewAll')}
+            onClick={() => setExpanded(true)}
+          >
+            +{remaining}
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function VisualStyleCardView({
+  card,
+  context,
+  formId,
+  questionId,
+  selected,
+  disabled,
+  onSelect,
+}: {
+  card: VisualStyleCard;
+  context: VisualStyleContext;
+  formId: string;
+  questionId: string;
+  selected: boolean;
+  disabled: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <label
+      className={`qf-visual-card${selected ? ' qf-visual-card-on' : ''}${card.recommended ? ' qf-visual-card-recommended' : ''}${disabled ? ' qf-visual-card-disabled' : ''}`}
+      data-recommended={card.recommended ? 'true' : undefined}
+      title={card.title}
+    >
+      <input
+        type="radio"
+        name={`${formId}-${questionId}`}
+        value={card.value}
+        checked={selected}
+        disabled={disabled}
+        aria-label={card.title}
+        onChange={onSelect}
+      />
+      <VisualStylePreview context={context} variant={card.variant} />
+      {selected ? (
+        <span className="qf-visual-card-check" aria-hidden>
+          <Icon name="check" size={12} />
+        </span>
+      ) : null}
+      <span className="qf-visual-card-name">{card.title}</span>
+    </label>
+  );
+}
+
+function VisualStylePreview({
+  context,
+  variant,
+}: {
+  context: VisualStyleContext;
+  variant: VisualStyleCard['variant'];
+}) {
+  if (context === 'deck') {
+    return (
+      <span className="qf-visual-preview qf-visual-preview-deck" data-style={variant} aria-hidden>
+        <span className="qf-preview-slide qf-preview-slide-hero">
+          <span className="qf-preview-kicker" />
+          <span className="qf-preview-title" />
+          <span className="qf-preview-title qf-preview-title-short" />
+          <span className="qf-preview-accent" />
+        </span>
+        <span className="qf-preview-slide qf-preview-slide-copy">
+          <span className="qf-preview-copy-lines">
+            <i />
+            <i />
+            <i />
+          </span>
+          <span className="qf-preview-figure" />
+        </span>
+        <span className="qf-preview-slide qf-preview-slide-data">
+          <span className="qf-preview-chart">
+            <i />
+            <i />
+            <i />
+            <i />
+          </span>
+        </span>
+      </span>
+    );
+  }
+  return (
+    <span className="qf-visual-preview qf-visual-preview-prototype" data-style={variant} aria-hidden>
+      <span className="qf-preview-app">
+        <span className="qf-preview-appbar">
+          <i />
+          <i />
+          <i />
+        </span>
+        <span className="qf-preview-app-body">
+          <span className="qf-preview-sidebar">
+            <i />
+            <i />
+            <i />
+          </span>
+          <span className="qf-preview-content">
+            <span className="qf-preview-content-head" />
+            <span className="qf-preview-content-grid">
+              <i />
+              <i />
+              <i />
+            </span>
+            <span className="qf-preview-content-list">
+              <i />
+              <i />
+            </span>
+          </span>
+        </span>
+      </span>
+    </span>
   );
 }
 
