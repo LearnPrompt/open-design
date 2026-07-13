@@ -313,16 +313,21 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
     update(q.id, [...fixed, ...splitCustomEntries(raw)]);
   }
 
+  function finalizeSubmission(source: 'submit' | 'skip' | 'auto') {
+    if (!onSubmit) return;
+    const files = collectFileSubmissions(form, fileAnswers);
+    if (files.length > 0) {
+      onSubmit(formatFormAnswers(form, answers), answers, source, files);
+    } else {
+      onSubmit(formatFormAnswers(form, answers), answers, source);
+    }
+  }
+
   function handleSubmit() {
     if (locked || !onSubmit) return;
     // Block submit until required fields are answered and selection caps hold.
     if (!ready) return;
-    const files = collectFileSubmissions(form, fileAnswers);
-    if (files.length > 0) {
-      onSubmit(formatFormAnswers(form, answers), answers, 'submit', files);
-    } else {
-      onSubmit(formatFormAnswers(form, answers), answers, 'submit');
-    }
+    finalizeSubmission('submit');
   }
 
   function handleSkipAll() {
@@ -346,7 +351,7 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
       setActiveQuestionIndex((current) => current + 1);
       return;
     }
-    onSubmit(formatFormAnswers(form, answers), answers, 'submit');
+    finalizeSubmission('skip');
   }
 
   function handlePreviousQuestion() {
@@ -425,8 +430,8 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
       return;
     }
     autoContinuedRef.current = true;
-    onSubmit(formatFormAnswers(form, answers), answers, 'auto');
-  }, [answers, autoContinueEnabled, autoContinueRemaining, form, onSubmit]);
+    finalizeSubmission('auto');
+  }, [answers, autoContinueEnabled, autoContinueRemaining, fileAnswers, form, onSubmit]);
 
   return (
     <div className={`question-form${locked ? ' question-form-locked' : ''}`} data-form-id={form.id}>

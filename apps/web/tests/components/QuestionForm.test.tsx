@@ -136,6 +136,24 @@ const steppedForm = {
   ],
 } as QuestionForm;
 
+const steppedFileForm = {
+  id: 'deck-references',
+  title: 'Add deck references',
+  questions: [
+    {
+      id: 'assets',
+      label: 'Reference assets',
+      type: 'file',
+      required: true,
+    },
+    {
+      id: 'notes',
+      label: 'Anything else to preserve?',
+      type: 'textarea',
+    },
+  ],
+} as QuestionForm;
+
 describe('QuestionFormView', () => {
   afterEach(() => cleanup());
 
@@ -798,7 +816,32 @@ describe('QuestionFormView', () => {
         length: '8',
         constraints: '',
       },
-      'submit',
+      'skip',
+    );
+  });
+
+  it('preserves earlier file answers when skipping the final optional step', () => {
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <QuestionFormView form={steppedFileForm} interactive onSubmit={onSubmit} />,
+    );
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement | null;
+    if (!input) throw new Error('expected file input');
+    const reference = new File(['image'], 'mood.png', { type: 'image/png' });
+
+    fireEvent.change(input, { target: { files: [reference] } });
+    fireEvent.click(screen.getByRole('button', { name: 'Next step' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }));
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      [
+        '[form answers — deck-references]',
+        '- Reference assets: mood.png',
+        '- Anything else to preserve?: (skipped)',
+      ].join('\n'),
+      { assets: 'mood.png', notes: '' },
+      'skip',
+      [{ questionId: 'assets', questionLabel: 'Reference assets', files: [reference] }],
     );
   });
 
