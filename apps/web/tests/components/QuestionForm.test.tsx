@@ -154,6 +154,24 @@ const steppedFileForm = {
   ],
 } as QuestionForm;
 
+const optionalFinalFileForm = {
+  id: 'deck-reference-upload',
+  title: 'Add an optional reference',
+  questions: [
+    {
+      id: 'goal',
+      label: 'What should the deck explain?',
+      type: 'text',
+      required: true,
+    },
+    {
+      id: 'reference',
+      label: 'Optional reference asset',
+      type: 'file',
+    },
+  ],
+} as QuestionForm;
+
 describe('QuestionFormView', () => {
   afterEach(() => cleanup());
 
@@ -842,6 +860,32 @@ describe('QuestionFormView', () => {
       { assets: 'mood.png', notes: '' },
       'skip',
       [{ questionId: 'assets', questionLabel: 'Reference assets', files: [reference] }],
+    );
+  });
+
+  it('does not submit files selected on a skipped final optional step', () => {
+    const onSubmit = vi.fn();
+    const { container } = render(
+      <QuestionFormView form={optionalFinalFileForm} interactive onSubmit={onSubmit} />,
+    );
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Product launch' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Next step' }));
+    const input = container.querySelector('input[type="file"]') as HTMLInputElement | null;
+    if (!input) throw new Error('expected file input');
+    fireEvent.change(input, {
+      target: { files: [new File(['image'], 'draft.png', { type: 'image/png' })] },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }));
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      [
+        '[form answers — deck-reference-upload]',
+        '- What should the deck explain?: Product launch',
+        '- Optional reference asset: (skipped)',
+      ].join('\n'),
+      { goal: 'Product launch', reference: '' },
+      'skip',
     );
   });
 

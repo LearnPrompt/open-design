@@ -313,13 +313,17 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
     update(q.id, [...fixed, ...splitCustomEntries(raw)]);
   }
 
-  function finalizeSubmission(source: 'submit' | 'skip' | 'auto') {
+  function finalizeSubmission(
+    source: 'submit' | 'skip' | 'auto',
+    skippedIds: ReadonlySet<string> = skippedQuestionIds,
+  ) {
     if (!onSubmit) return;
-    const files = collectFileSubmissions(form, fileAnswers);
+    const submittedAnswers = answersWithSkippedQuestions(form, answers, skippedIds);
+    const files = collectFileSubmissions(form, fileAnswers, skippedIds);
     if (files.length > 0) {
-      onSubmit(formatFormAnswers(form, answers), answers, source, files);
+      onSubmit(formatFormAnswers(form, submittedAnswers), submittedAnswers, source, files);
     } else {
-      onSubmit(formatFormAnswers(form, answers), answers, source);
+      onSubmit(formatFormAnswers(form, submittedAnswers), submittedAnswers, source);
     }
   }
 
@@ -351,7 +355,7 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
       setActiveQuestionIndex((current) => current + 1);
       return;
     }
-    finalizeSubmission('skip');
+    finalizeSubmission('skip', nextSkipped);
   }
 
   function handlePreviousQuestion() {
@@ -1404,13 +1408,29 @@ function draftSafeAnswers(
   return out;
 }
 
+function answersWithSkippedQuestions(
+  form: QuestionForm,
+  answers: Record<string, string | string[]>,
+  skippedQuestionIds: ReadonlySet<string>,
+): Record<string, string | string[]> {
+  if (skippedQuestionIds.size === 0) return answers;
+  const submittedAnswers = { ...answers };
+  for (const q of form.questions) {
+    if (skippedQuestionIds.has(q.id)) {
+      submittedAnswers[q.id] = emptyQuestionValue(q);
+    }
+  }
+  return submittedAnswers;
+}
+
 function collectFileSubmissions(
   form: QuestionForm,
   fileAnswers: Record<string, File[]>,
+  skippedQuestionIds: ReadonlySet<string>,
 ): QuestionFormFileSubmission[] {
   const out: QuestionFormFileSubmission[] = [];
   for (const q of form.questions) {
-    if (q.type !== 'file') continue;
+    if (q.type !== 'file' || skippedQuestionIds.has(q.id)) continue;
     const files = fileAnswers[q.id] ?? [];
     if (files.length === 0) continue;
     out.push({ questionId: q.id, questionLabel: q.label, files });
