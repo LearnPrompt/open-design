@@ -3,20 +3,58 @@ import {
   useEffect,
   useImperativeHandle,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
 } from 'react';
 import type { ReactNode } from 'react';
-import { Button } from '@open-design/components';
+import { createPortal } from 'react-dom';
+import {
+  Button,
+  Dialog,
+  DialogBody,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@open-design/components';
 import { tForLanguageTag, useT } from '../i18n';
 import type { DirectionCard, FormOption, QuestionForm } from '../artifacts/question-form';
 import { formatFormAnswers, formOptionValueForLabel } from '../artifacts/question-form';
 import {
   visualStyleCardsForOptions,
   type VisualStyleCard,
+  type VisualStyleCategory,
   type VisualStyleContext,
 } from '../runtime/visual-style-catalog';
 import { Icon } from './Icon';
+
+export type QuestionFormInteraction =
+  | {
+      element: 'visual_style_card';
+      questionId: string;
+      styleId: string;
+      styleContext: VisualStyleContext;
+      source: 'inline' | 'gallery';
+    }
+  | {
+      element: 'visual_style_refresh' | 'visual_style_gallery_open';
+      questionId: string;
+      styleContext: VisualStyleContext;
+    }
+  | {
+      element: 'visual_style_category_tab';
+      questionId: string;
+      styleContext: VisualStyleContext;
+      categoryId: 'all' | 'business' | 'editorial' | 'creative' | 'minimal';
+    }
+  | {
+      element: 'step_back' | 'step_next' | 'step_skip';
+      questionId: string;
+      stepIndex: number;
+      stepCount: number;
+    };
+
+const OPTIONAL_FORM_AUTO_CONTINUE_SECONDS = 10 * 60;
 
 interface Props {
   form: QuestionForm;
@@ -37,14 +75,16 @@ interface Props {
   // Fires on each real user interaction with a single question (locked forms
   // never reach it), allowing the host to track finite-choice picks.
   onAnswerChange?: (questionId: string, value: string | string[]) => void;
+  onInteraction?: (interaction: QuestionFormInteraction) => void;
   onSubmit?: (
     text: string,
     answers: Record<string, string | string[]>,
-    source: 'submit' | 'skip',
+    source: 'submit' | 'skip' | 'auto',
     files?: QuestionFormFileSubmission[],
   ) => void;
   submitDisabled?: boolean;
   visualStyleContext?: VisualStyleContext;
+  autoContinueOptional?: boolean;
 }
 
 export interface QuestionFormFileSubmission {
@@ -71,9 +111,11 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
     onReadyChange,
     onDraftChange,
     onAnswerChange,
+    onInteraction,
     onSubmit,
     submitDisabled = false,
     visualStyleContext,
+    autoContinueOptional = false,
   },
   ref,
 ) {
@@ -102,8 +144,29 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
   // value (submitted history, restored draft) renders expanded without an
   // entry here — see customChoiceExpanded.
   const [otherOpen, setOtherOpen] = useState<Set<string>>(() => new Set());
+  const [activeQuestionIndex, setActiveQuestionIndex] = useState(0);
+  const [skippedQuestionIds, setSkippedQuestionIds] = useState<Set<string>>(() => new Set());
+  const [autoContinueRemaining, setAutoContinueRemaining] = useState(
+    OPTIONAL_FORM_AUTO_CONTINUE_SECONDS,
+  );
+  const autoContinuedRef = useRef(false);
   const locked = !interactive || !onSubmit || submittedAnswers !== undefined;
   const currentAnswers = submittedAnswers ?? answers;
+  const stepped = !locked && !hideInternalSubmit && form.questions.length > 1;
+  const activeQuestion = form.questions[activeQuestionIndex];
+  const isLastQuestion = activeQuestionIndex === form.questions.length - 1;
+  const questionsToRender = stepped && activeQuestion ? [activeQuestion] : form.questions;
+
+  useEffect(() => {
+    setActiveQuestionIndex(0);
+    setSkippedQuestionIds(new Set());
+  }, [form.id]);
+
+  useEffect(() => {
+    setActiveQuestionIndex((current) =>
+      Math.min(current, Math.max(0, form.questions.length - 1)),
+    );
+  }, [form.questions.length]);
 
   function hasCustomAnswer(q: QuestionForm['questions'][number]): boolean {
     const value = currentAnswers[q.id];
@@ -214,6 +277,12 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
     touched.add(id);
     const next = { ...answers, [id]: value };
     setAnswers(next);
+    setSkippedQuestionIds((current) => {
+      if (!current.has(id)) return current;
+      const nextSkipped = new Set(current);
+      nextSkipped.delete(id);
+      return nextSkipped;
+    });
     onDraftChange?.(draftSafeAnswers(form, next));
     onAnswerChange?.(id, value);
   }
@@ -227,6 +296,12 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
     const next = has ? current.filter((v) => v !== option) : [...current, option];
     const nextAnswers = { ...answers, [id]: next };
     setAnswers(nextAnswers);
+    setSkippedQuestionIds((currentSkipped) => {
+      if (!currentSkipped.has(id)) return currentSkipped;
+      const nextSkipped = new Set(currentSkipped);
+      nextSkipped.delete(id);
+      return nextSkipped;
+    });
     onDraftChange?.(draftSafeAnswers(form, nextAnswers));
     onAnswerChange?.(id, next);
   }
@@ -241,7 +316,6 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
   function handleSubmit() {
     if (locked || !onSubmit) return;
     // Block submit until required fields are answered and selection caps hold.
-    // skipAll() is the only path that intentionally bypasses this.
     if (!ready) return;
     const files = collectFileSubmissions(form, fileAnswers);
     if (files.length > 0) {
@@ -252,9 +326,49 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
   }
 
   function handleSkipAll() {
-    if (locked || !onSubmit) return;
+    if (locked || !onSubmit || !canSkipAll) return;
     const empty: Record<string, string | string[]> = {};
     onSubmit(formatFormAnswers(form, empty), empty, 'skip');
+  }
+
+  function handleSkipCurrent() {
+    if (locked || !onSubmit || !activeQuestion || activeQuestion.required === true) return;
+    onInteraction?.({
+      element: 'step_skip',
+      questionId: activeQuestion.id,
+      stepIndex: activeQuestionIndex + 1,
+      stepCount: form.questions.length,
+    });
+    const nextSkipped = new Set(skippedQuestionIds);
+    nextSkipped.add(activeQuestion.id);
+    setSkippedQuestionIds(nextSkipped);
+    if (!isLastQuestion) {
+      setActiveQuestionIndex((current) => current + 1);
+      return;
+    }
+    onSubmit(formatFormAnswers(form, answers), answers, 'submit');
+  }
+
+  function handlePreviousQuestion() {
+    if (!activeQuestion || activeQuestionIndex === 0) return;
+    onInteraction?.({
+      element: 'step_back',
+      questionId: activeQuestion.id,
+      stepIndex: activeQuestionIndex + 1,
+      stepCount: form.questions.length,
+    });
+    setActiveQuestionIndex((current) => Math.max(0, current - 1));
+  }
+
+  function handleNextQuestion() {
+    if (!activeQuestion || isLastQuestion || !currentQuestionReady) return;
+    onInteraction?.({
+      element: 'step_next',
+      questionId: activeQuestion.id,
+      stepIndex: activeQuestionIndex + 1,
+      stepCount: form.questions.length,
+    });
+    setActiveQuestionIndex((current) => current + 1);
   }
 
   // Per-question checkbox selection caps must hold.
@@ -263,24 +377,56 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
     const v = currentAnswers[q.id];
     return !Array.isArray(v) || v.length <= q.maxSelections;
   });
-  // Required questions must carry a non-empty answer. This gates the standard
-  // submit button; only skipAll() bypasses it on purpose. Without this,
-  // main-path forms (the discovery router's
+  // Required questions must carry a non-empty answer. Without this, main-path forms (the discovery router's
   // required taskType/output, the ElevenLabs voice picker) would accept an
   // empty submit and serialize "(skipped)" for fields the rest of the system
   // treats as mandatory.
   const requiredAnswered = form.questions.every((q) => {
     if (q.required !== true) return true;
     const v = currentAnswers[q.id];
-    if (Array.isArray(v)) return v.length > 0;
-    return typeof v === 'string' && v.trim().length > 0;
+    return questionAnswerIsPresent(v);
   });
   const ready = withinSelectionLimits && requiredAnswered;
+  const canSkipAll = form.questions.every((q) => q.required !== true);
+  const autoContinueEnabled =
+    autoContinueOptional && canSkipAll && !locked && !submitDisabled;
+  const currentQuestionReady =
+    !activeQuestion ||
+    activeQuestion.required !== true ||
+    questionAnswerIsPresent(currentAnswers[activeQuestion.id]);
+  const autoContinueCountdown = `${Math.floor(autoContinueRemaining / 60)}:${String(
+    autoContinueRemaining % 60,
+  ).padStart(2, '0')}`;
 
   useImperativeHandle(ref, () => ({ submit: handleSubmit, skipAll: handleSkipAll }));
   useEffect(() => {
     onReadyChange?.(!locked && ready);
   }, [onReadyChange, locked, ready]);
+  useEffect(() => {
+    if (!autoContinueEnabled) {
+      setAutoContinueRemaining(OPTIONAL_FORM_AUTO_CONTINUE_SECONDS);
+      autoContinuedRef.current = false;
+      return;
+    }
+    setAutoContinueRemaining(OPTIONAL_FORM_AUTO_CONTINUE_SECONDS);
+    autoContinuedRef.current = false;
+    const timer = window.setInterval(() => {
+      setAutoContinueRemaining((current) => Math.max(0, current - 1));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [autoContinueEnabled, form.id]);
+  useEffect(() => {
+    if (
+      !autoContinueEnabled ||
+      autoContinueRemaining > 0 ||
+      autoContinuedRef.current ||
+      !onSubmit
+    ) {
+      return;
+    }
+    autoContinuedRef.current = true;
+    onSubmit(formatFormAnswers(form, answers), answers, 'auto');
+  }, [answers, autoContinueEnabled, autoContinueRemaining, form, onSubmit]);
 
   return (
     <div className={`question-form${locked ? ' question-form-locked' : ''}`} data-form-id={form.id}>
@@ -292,25 +438,36 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
             <div className="question-form-desc">{form.description}</div>
           ) : null}
         </div>
+        {stepped ? (
+          <span
+            className="qf-step-progress"
+            aria-label={`${activeQuestionIndex + 1} / ${form.questions.length}`}
+          >
+            {activeQuestionIndex + 1} / {form.questions.length}
+          </span>
+        ) : null}
         {locked ? <span className="question-form-pill">{t('qf.answered')}</span> : null}
       </div>
       <div className="question-form-body">
-        {form.questions.map((q) => {
+        {questionsToRender.map((q) => {
           const value = currentAnswers[q.id];
           const visualStyleCards =
-            visualStyleContext && q.id === 'tone' && q.type === 'checkbox' && q.options
+            visualStyleContext &&
+            q.id === 'tone' &&
+            (q.type === 'checkbox' || q.type === 'radio') &&
+            q.options
               ? visualStyleCardsForOptions(visualStyleContext, q.options)
               : null;
           return (
-            <div key={q.id} className="qf-field">
+            <div
+              key={q.id}
+              className={`qf-field${visualStyleCards ? ' qf-field-visual' : ''}`}
+            >
               <label className="qf-label">
                 <span>{q.label}</span>
-                {q.required ? (
-                  <span className="qf-required" aria-label={t('qf.required')}>*</span>
-                ) : null}
               </label>
               {q.help ? <div className="qf-help">{q.help}</div> : null}
-              {q.type === 'radio' && q.options ? (
+              {q.type === 'radio' && q.options && !visualStyleCards ? (
                 <div className="qf-options">
                   {q.options.map((opt) => (
                     <label
@@ -333,7 +490,10 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
                   {shouldRenderCustomChoice(q) ? renderOtherChip(q) : null}
                 </div>
               ) : null}
-              {q.type === 'radio' && q.options && shouldRenderCustomChoice(q) ? (
+              {q.type === 'radio' &&
+              q.options &&
+              !visualStyleCards &&
+              shouldRenderCustomChoice(q) ? (
                 <CollapsibleCustomChoice open={customChoiceExpanded(q)}>
                   <CustomChoiceInput
                     label={q.customLabel ?? t('qf.customLabel')}
@@ -378,9 +538,20 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
                   context={visualStyleContext}
                   formId={form.id}
                   questionId={q.id}
-                  value={Array.isArray(value) ? value : []}
+                  title={q.label}
+                  allowCustom={shouldRenderCustomChoice(q)}
+                  customLabel={q.customLabel ?? t('qf.customLabel')}
+                  customPlaceholder={q.customPlaceholder ?? t('qf.customPlaceholder')}
+                  value={
+                    Array.isArray(value)
+                      ? value
+                      : typeof value === 'string' && value
+                        ? [value]
+                        : []
+                  }
                   disabled={locked}
-                  onSelect={(next) => update(q.id, [next])}
+                  onSelect={(next) => update(q.id, q.type === 'radio' ? next : [next])}
+                  onInteraction={onInteraction}
                 />
               ) : null}
               {q.type === 'checkbox' &&
@@ -591,19 +762,84 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
             <span className="qf-locked-note">
               {submittedAnswers ? t('qf.lockedSubmitted') : t('qf.lockedPrev')}
             </span>
+          ) : stepped ? (
+            <>
+              {autoContinueEnabled ? (
+                <span
+                  className="qf-auto-continue"
+                  title={t('questions.autoSkipHint')}
+                  aria-label={`${t('questions.autoSkipHint')} ${autoContinueCountdown}`}
+                >
+                  {autoContinueCountdown}
+                </span>
+              ) : null}
+              {activeQuestion?.required === true ? null : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={handleSkipCurrent}
+                  disabled={submitDisabled}
+                >
+                  {t('questionForm.skip')}
+                </Button>
+              )}
+              <span className="qf-submit-actions">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={handlePreviousQuestion}
+                  disabled={submitDisabled || activeQuestionIndex === 0}
+                >
+                  {t('settings.onboardingBack')}
+                </Button>
+                <Button
+                  type="button"
+                  variant="primary"
+                  onClick={
+                    isLastQuestion
+                      ? handleSubmit
+                      : handleNextQuestion
+                  }
+                  disabled={
+                    submitDisabled || (isLastQuestion ? !ready : !currentQuestionReady)
+                  }
+                  title={
+                    isLastQuestion && !submitDisabled && ready
+                      ? t('qf.submitTitle')
+                      : undefined
+                  }
+                >
+                  {isLastQuestion
+                    ? form.submitLabel ?? t('qf.submitDefault')
+                    : t('nextStep.title')}
+                </Button>
+              </span>
+            </>
           ) : (
-            <span className="qf-hint">{t('qf.hint')}</span>
+            <span
+              className={autoContinueEnabled ? 'qf-auto-continue' : 'qf-hint'}
+              title={autoContinueEnabled ? t('questions.autoSkipHint') : undefined}
+              aria-label={
+                autoContinueEnabled
+                  ? `${t('questions.autoSkipHint')} ${autoContinueCountdown}`
+                  : undefined
+              }
+            >
+              {autoContinueEnabled ? autoContinueCountdown : t('qf.hint')}
+            </span>
           )}
-          {!locked ? (
+          {!locked && !stepped ? (
             <span className="qf-submit-actions">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={handleSkipAll}
-                disabled={submitDisabled}
-              >
-                {t('questions.skipAll')}
-              </Button>
+              {canSkipAll ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={handleSkipAll}
+                  disabled={submitDisabled}
+                >
+                  {t('questions.skipAll')}
+                </Button>
+              ) : null}
               <Button
                 type="button"
                 variant="primary"
@@ -675,28 +911,53 @@ function CustomChoiceInput({
 }
 
 const VISUAL_STYLE_PAGE_SIZE = 4;
+type VisualStyleGalleryCategory = 'all' | VisualStyleCategory;
+const VISUAL_STYLE_GALLERY_CATEGORIES: Array<{
+  value: VisualStyleGalleryCategory;
+  label: string;
+}> = [
+  { value: 'all', label: 'All' },
+  { value: 'business', label: 'Business' },
+  { value: 'editorial', label: 'Editorial' },
+  { value: 'creative', label: 'Creative' },
+  { value: 'minimal', label: 'Minimal' },
+];
 
 function VisualStylePicker({
   cards,
   context,
   formId,
   questionId,
+  title,
+  allowCustom,
+  customLabel,
+  customPlaceholder,
   value,
   disabled,
   onSelect,
+  onInteraction,
 }: {
   cards: VisualStyleCard[];
   context: VisualStyleContext;
   formId: string;
   questionId: string;
+  title: string;
+  allowCustom: boolean;
+  customLabel: string;
+  customPlaceholder: string;
   value: string[];
   disabled: boolean;
   onSelect: (value: string) => void;
+  onInteraction?: (interaction: QuestionFormInteraction) => void;
 }) {
   const t = useT();
   const [offset, setOffset] = useState(0);
-  const [expanded, setExpanded] = useState(false);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryCategory, setGalleryCategory] =
+    useState<VisualStyleGalleryCategory>('all');
   const selected = cards.find((card) => value.includes(card.value));
+  const customValue =
+    value.find((candidate) => !cards.some((card) => card.value === candidate)) ?? '';
   const page = Array.from(
     { length: Math.min(VISUAL_STYLE_PAGE_SIZE, cards.length) },
     (_, index) => {
@@ -712,70 +973,193 @@ function VisualStylePicker({
           VISUAL_STYLE_PAGE_SIZE,
         )
       : page;
-  const visibleCards = expanded ? cards : compactCards;
-  const remaining = Math.max(0, cards.length - visibleCards.length);
+  const remaining = Math.max(0, cards.length - compactCards.length);
+  const galleryCards =
+    galleryCategory === 'all'
+      ? cards
+      : cards.filter((card) => card.category === galleryCategory);
 
   function shuffle() {
     if (cards.length <= VISUAL_STYLE_PAGE_SIZE) return;
+    onInteraction?.({
+      element: 'visual_style_refresh',
+      questionId,
+      styleContext: context,
+    });
     setOffset((current) => (current + VISUAL_STYLE_PAGE_SIZE) % cards.length);
   }
 
+  function selectStyle(card: VisualStyleCard, source: 'inline' | 'gallery') {
+    onInteraction?.({
+      element: 'visual_style_card',
+      questionId,
+      styleId: card.value,
+      styleContext: context,
+      source,
+    });
+    onSelect(card.value);
+  }
+
   return (
-    <div
-      className={`qf-visual-picker${expanded ? ' qf-visual-picker-expanded' : ''}`}
-      data-artifact-type={context}
-    >
-      <div className="qf-visual-toolbar">
-        <Button
-          type="button"
-          variant="ghost"
-          className="qf-visual-toolbar-button"
-          disabled={disabled || cards.length <= VISUAL_STYLE_PAGE_SIZE}
-          onClick={shuffle}
-          title={t('designFiles.refresh')}
-        >
-          <Icon name="refresh" size={13} />
-          <span>{t('designFiles.refresh')}</span>
-        </Button>
-        {!expanded && cards.length > VISUAL_STYLE_PAGE_SIZE ? (
+    <>
+      <div className="qf-visual-picker" data-artifact-type={context}>
+        <div className="qf-visual-toolbar">
           <Button
             type="button"
             variant="ghost"
             className="qf-visual-toolbar-button"
-            disabled={disabled}
-            onClick={() => setExpanded(true)}
+            disabled={disabled || cards.length <= VISUAL_STYLE_PAGE_SIZE}
+            onClick={shuffle}
+            title={t('designFiles.refresh')}
+            aria-label={t('designFiles.refresh')}
           >
-            {t('recentProjects.viewAll')}
+            <Icon name="refresh" size={13} />
           </Button>
-        ) : null}
-      </div>
-      <div className={expanded ? 'qf-visual-grid' : 'qf-visual-strip'}>
-        {visibleCards.map((card) => (
-          <VisualStyleCardView
-            key={card.value}
-            card={card}
-            context={context}
-            formId={formId}
-            questionId={questionId}
-            selected={value.includes(card.value)}
-            disabled={disabled}
-            onSelect={() => onSelect(card.value)}
-          />
-        ))}
-        {!expanded && remaining > 0 ? (
+        </div>
+        <div
+          className="qf-visual-strip"
+          style={{
+            gridTemplateColumns: `repeat(${compactCards.length + (remaining > 0 ? 1 : 0)}, minmax(0, 1fr))`,
+          }}
+        >
+          {compactCards.map((card) => (
+            <VisualStyleCardView
+              key={card.value}
+              card={card}
+              context={context}
+              formId={formId}
+              questionId={questionId}
+              selected={value.includes(card.value)}
+              disabled={disabled}
+              onSelect={() => selectStyle(card, 'inline')}
+            />
+          ))}
+          {remaining > 0 ? (
+            <Button
+              type="button"
+              variant="ghost"
+              className="qf-visual-more"
+              disabled={disabled}
+              aria-label={t('recentProjects.viewAll')}
+              onClick={() => {
+                onInteraction?.({
+                  element: 'visual_style_gallery_open',
+                  questionId,
+                  styleContext: context,
+                });
+                setGalleryOpen(true);
+              }}
+            >
+              +{remaining}
+            </Button>
+          ) : null}
+        </div>
+        {customValue ? (
           <Button
             type="button"
             variant="ghost"
-            className="qf-visual-more"
+            className="qf-visual-custom-summary"
             disabled={disabled}
-            aria-label={t('recentProjects.viewAll')}
-            onClick={() => setExpanded(true)}
+            onClick={() => setGalleryOpen(true)}
           >
-            +{remaining}
+            <Icon name="check" size={12} />
+            <span>{customValue}</span>
           </Button>
         ) : null}
       </div>
-    </div>
+      {galleryOpen
+        ? createPortal(
+            <Dialog
+              className="qf-visual-dialog"
+              backdropClassName="qf-visual-dialog-backdrop"
+              layout="sectioned"
+              ariaLabel={title}
+              onClose={() => setGalleryOpen(false)}
+              closeOnEscape
+            >
+              <DialogHeader className="qf-visual-dialog-head">
+                <DialogTitle className="qf-visual-dialog-title">{title}</DialogTitle>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="qf-visual-dialog-close"
+                  aria-label={t('common.close')}
+                  title={t('common.close')}
+                  onClick={() => setGalleryOpen(false)}
+                >
+                  <Icon name="close" size={16} />
+                </Button>
+              </DialogHeader>
+              <DialogBody className="qf-visual-dialog-body">
+                <div
+                  className="qf-visual-dialog-tabs"
+                  role="tablist"
+                  aria-label={`${title} categories`}
+                >
+                  {VISUAL_STYLE_GALLERY_CATEGORIES.map((category) => {
+                    const active = galleryCategory === category.value;
+                    return (
+                      <Button
+                        key={category.value}
+                        type="button"
+                        variant="ghost"
+                        role="tab"
+                        aria-selected={active}
+                        tabIndex={active ? 0 : -1}
+                        className={`qf-visual-dialog-tab${active ? ' qf-visual-dialog-tab-active' : ''}`}
+                        onClick={() => {
+                          onInteraction?.({
+                            element: 'visual_style_category_tab',
+                            questionId,
+                            styleContext: context,
+                            categoryId: category.value,
+                          });
+                          setGalleryCategory(category.value);
+                        }}
+                      >
+                        {category.label}
+                      </Button>
+                    );
+                  })}
+                </div>
+                <div className="qf-visual-dialog-grid">
+                  {galleryCards.map((card) => (
+                    <VisualStyleCardView
+                      key={card.value}
+                      card={card}
+                      context={context}
+                      formId={`${formId}-gallery`}
+                      questionId={questionId}
+                      selected={value.includes(card.value)}
+                      disabled={disabled}
+                      onSelect={() => selectStyle(card, 'gallery')}
+                    />
+                  ))}
+                </div>
+                {allowCustom ? (
+                  <label className="qf-visual-custom">
+                    <span className="qf-visual-custom-label">{customLabel}</span>
+                    <input
+                      type="text"
+                      className="qf-input"
+                      value={customValue}
+                      placeholder={customPlaceholder}
+                      disabled={disabled}
+                      onChange={(event) => onSelect(event.target.value)}
+                    />
+                  </label>
+                ) : null}
+              </DialogBody>
+              <DialogFooter className="qf-visual-dialog-foot">
+                <Button type="button" variant="primary" onClick={() => setGalleryOpen(false)}>
+                  {t('tool.done')}
+                </Button>
+              </DialogFooter>
+            </Dialog>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }
 
@@ -1035,6 +1419,11 @@ function emptyQuestionValue(q: QuestionForm['questions'][number]): string | stri
   if (q.type === 'range') return String(q.min ?? 0);
   if (q.type === 'color') return normalizeColorInputValue('');
   return '';
+}
+
+function questionAnswerIsPresent(value: string | string[] | undefined): boolean {
+  if (Array.isArray(value)) return value.length > 0;
+  return typeof value === 'string' && value.trim().length > 0;
 }
 
 function canonicalizeQuestionValue(

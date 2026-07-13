@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuestionFormView, parseSubmittedAnswers } from '../../src/components/QuestionForm';
 import type { QuestionForm } from '../../src/artifacts/question-form';
@@ -104,6 +104,34 @@ const selectObjectForm = {
         { label: 'Mobile (iOS/Android)', value: 'mobile' },
         { label: 'Desktop web', value: 'desktop-web' },
       ],
+    },
+  ],
+} as QuestionForm;
+
+const steppedForm = {
+  id: 'deck-brief',
+  title: 'Confirm the deck brief',
+  questions: [
+    {
+      id: 'audience',
+      label: 'Who will see this deck?',
+      type: 'text',
+      required: true,
+    },
+    {
+      id: 'length',
+      label: 'How detailed should it be?',
+      type: 'radio',
+      required: true,
+      options: [
+        { label: 'Concise · 8 slides', value: '8' },
+        { label: 'Standard · 12 slides', value: '12' },
+      ],
+    },
+    {
+      id: 'constraints',
+      label: 'Anything else to preserve?',
+      type: 'textarea',
     },
   ],
 } as QuestionForm;
@@ -364,11 +392,7 @@ describe('QuestionFormView', () => {
     });
   });
 
-  it('marks required fields with the inline indicator even when the footer is hidden', () => {
-    // Embedded-host path: hideInternalSubmit hides the form footer, so
-    // the inline "*" next to a required label is the only per-field cue that a
-    // field is mandatory. A mixed required/optional form must still advertise
-    // which fields block the host's disabled Continue button.
+  it('keeps required semantics without rendering a red asterisk', () => {
     const mixedForm = {
       id: 'discovery',
       title: 'Quick brief',
@@ -384,10 +408,8 @@ describe('QuestionFormView', () => {
     );
 
     const fields = container.querySelectorAll('.qf-field');
-    const requiredField = fields[0]!;
-    const optionalField = fields[1]!;
-    expect(requiredField.querySelector('.qf-required')?.textContent).toBe('*');
-    expect(optionalField.querySelector('.qf-required')).toBeNull();
+    expect(fields[0]?.querySelector('.qf-required')).toBeNull();
+    expect(fields[1]?.querySelector('.qf-required')).toBeNull();
   });
 
   it('submits required select object options with stable values', () => {
@@ -534,6 +556,10 @@ describe('QuestionFormView', () => {
     const onSubmit = vi.fn();
     render(<QuestionFormView form={nativeDefaultsForm} interactive onSubmit={onSubmit} />);
 
+    const next = screen.getByRole('button', { name: 'Next step' }) as HTMLButtonElement;
+    expect(next.disabled).toBe(false);
+    fireEvent.click(next);
+
     const submit = screen.getByRole('button', { name: 'Send answers' }) as HTMLButtonElement;
     expect(submit.disabled).toBe(false);
 
@@ -550,17 +576,29 @@ describe('QuestionFormView', () => {
     );
   });
 
-  it('keeps Skip beside Submit and bypasses required unanswered fields', () => {
+  it('does not offer Skip all when a form contains required questions', () => {
     const onSubmit = vi.fn();
     render(<QuestionFormView form={richForm} interactive onSubmit={onSubmit} />);
 
     expect((screen.getByRole('button', { name: 'Send answers' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Skip all' }));
+    expect(screen.queryByRole('button', { name: 'Skip all' })).toBeNull();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
 
+  it('keeps Skip all for a form containing only optional questions', () => {
+    const onSubmit = vi.fn();
+    const optionalForm = {
+      id: 'optional',
+      title: 'Optional context',
+      questions: [{ id: 'notes', label: 'Anything else?', type: 'text' }],
+    } as QuestionForm;
+    render(<QuestionFormView form={optionalForm} interactive onSubmit={onSubmit} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Skip all' }));
     expect(onSubmit).toHaveBeenCalledWith(
-      expect.stringContaining('[form answers — discovery]'),
+      expect.stringContaining('[form answers — optional]'),
       {},
       'skip',
     );
@@ -608,7 +646,159 @@ describe('QuestionFormView', () => {
     expect(onSubmit).toHaveBeenCalledWith(
       '[form answers — references]\n- Reference assets: mood.png, brief.pdf',
       { assets: ['mood.png', 'brief.pdf'] },
+      'submit',
       [{ questionId: 'assets', questionLabel: 'Reference assets', files: [first, second] }],
+    );
+  });
+
+  it('auto-continues after ten minutes only when every question is optional', () => {
+    vi.useFakeTimers();
+    try {
+      const optionalSubmit = vi.fn();
+      const optionalForm = {
+        id: 'optional-auto-continue',
+        title: 'Optional context',
+        questions: [{ id: 'notes', label: 'Anything else?', type: 'text' }],
+      } as QuestionForm;
+      const { unmount } = render(
+        <QuestionFormView
+          form={optionalForm}
+          interactive
+          autoContinueOptional
+          onSubmit={optionalSubmit}
+        />,
+      );
+
+      expect(screen.getByLabelText(/Auto-continues when the timer ends 10:00/)).toBeTruthy();
+      act(() => vi.advanceTimersByTime(10 * 60 * 1000));
+      expect(optionalSubmit).toHaveBeenCalledWith(
+        expect.stringContaining('[form answers — optional-auto-continue]'),
+        { notes: '' },
+        'auto',
+      );
+      unmount();
+
+      const requiredSubmit = vi.fn();
+      render(
+        <QuestionFormView
+          form={richForm}
+          interactive
+          autoContinueOptional
+          onSubmit={requiredSubmit}
+        />,
+      );
+      expect(screen.queryByLabelText(/Auto-continues when the timer ends/)).toBeNull();
+      act(() => vi.advanceTimersByTime(10 * 60 * 1000));
+      expect(requiredSubmit).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows multi-question forms one step at a time and preserves answers', () => {
+    const onSubmit = vi.fn();
+    const onInteraction = vi.fn();
+    render(
+      <QuestionFormView
+        form={steppedForm}
+        interactive
+        onInteraction={onInteraction}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.getByText('1 / 3').closest('.question-form-head')).toBeTruthy();
+    expect(screen.getByText('Who will see this deck?')).toBeTruthy();
+    expect(screen.queryByText('How detailed should it be?')).toBeNull();
+    expect((screen.getByRole('button', { name: 'Next step' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'Leadership and product team' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Next step' }));
+
+    expect(screen.getByText('2 / 3')).toBeTruthy();
+    expect(screen.queryByText('Who will see this deck?')).toBeNull();
+    fireEvent.click(screen.getByLabelText('Standard · 12 slides'));
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(onInteraction).toHaveBeenCalledWith({
+      element: 'step_back',
+      questionId: 'length',
+      stepIndex: 2,
+      stepCount: 3,
+    });
+
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe(
+      'Leadership and product team',
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Next step' }));
+    expect((screen.getByLabelText('Standard · 12 slides') as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Next step' }));
+
+    expect(screen.getByText('3 / 3')).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'Include speaker notes' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Send answers' }));
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.stringContaining('- Who will see this deck?: Leadership and product team'),
+      {
+        audience: 'Leadership and product team',
+        length: '12',
+        constraints: 'Include speaker notes',
+      },
+      'submit',
+    );
+  });
+
+  it('offers Skip only on optional steps', () => {
+    const onSubmit = vi.fn();
+    const onInteraction = vi.fn();
+    render(
+      <QuestionFormView
+        form={steppedForm}
+        interactive
+        onInteraction={onInteraction}
+        onSubmit={onSubmit}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Skip' })).toBeNull();
+    fireEvent.change(screen.getByRole('textbox'), {
+      target: { value: 'Leadership and product team' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Next step' }));
+    expect(onInteraction).toHaveBeenCalledWith({
+      element: 'step_next',
+      questionId: 'audience',
+      stepIndex: 1,
+      stepCount: 3,
+    });
+
+    expect(screen.getByText('2 / 3')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Skip' })).toBeNull();
+
+    fireEvent.click(screen.getByLabelText('Concise · 8 slides'));
+    fireEvent.click(screen.getByRole('button', { name: 'Next step' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Skip' }));
+    expect(onInteraction).toHaveBeenCalledWith({
+      element: 'step_skip',
+      questionId: 'constraints',
+      stepIndex: 3,
+      stepCount: 3,
+    });
+
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.stringContaining('- Anything else to preserve?: (skipped)'),
+      {
+        audience: 'Leadership and product team',
+        length: '8',
+        constraints: '',
+      },
+      'submit',
     );
   });
 
@@ -645,7 +835,7 @@ describe('QuestionFormView', () => {
         {
           id: 'tone',
           label: 'Visual direction',
-          type: 'checkbox',
+          type: 'radio',
           required: true,
           allowCustom: true,
           options: [
@@ -659,12 +849,15 @@ describe('QuestionFormView', () => {
         },
       ],
     } as QuestionForm;
+    const onInteraction = vi.fn();
+    const onSubmit = vi.fn();
     const { container } = render(
       <QuestionFormView
         form={galleryForm}
         interactive
         visualStyleContext="deck"
-        onSubmit={vi.fn()}
+        onInteraction={onInteraction}
+        onSubmit={onSubmit}
       />,
     );
 
@@ -675,12 +868,61 @@ describe('QuestionFormView', () => {
     const firstPage = visibleLabels();
     expect(firstPage).toHaveLength(4);
     expect(screen.queryByLabelText('Custom answer')).toBeNull();
+    expect(screen.queryByText('Refresh')).toBeNull();
+    expect(screen.getByText('+2')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(onInteraction).toHaveBeenCalledWith({
+      element: 'visual_style_refresh',
+      questionId: 'tone',
+      styleContext: 'deck',
+    });
     expect(visibleLabels()).toHaveLength(4);
     expect(visibleLabels()).not.toEqual(firstPage);
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'View all' })[0]!);
-    expect(visibleLabels()).toHaveLength(6);
+    fireEvent.click(screen.getByRole('button', { name: 'View all' }));
+    expect(onInteraction).toHaveBeenCalledWith({
+      element: 'visual_style_gallery_open',
+      questionId: 'tone',
+      styleContext: 'deck',
+    });
+    const dialog = screen.getByRole('dialog', { name: 'Visual direction' });
+    expect(dialog.querySelectorAll('.qf-visual-card input')).toHaveLength(6);
+    expect(visibleLabels()).toHaveLength(4);
+    const customInput = screen.getByLabelText('Custom answer') as HTMLInputElement;
+    fireEvent.change(customInput, { target: { value: 'Warm Japanese editorial' } });
+    expect(customInput.value).toBe('Warm Japanese editorial');
+    expect(container.querySelector('.qf-visual-custom-summary')?.textContent).toContain(
+      'Warm Japanese editorial',
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Business' }));
+    expect(onInteraction).toHaveBeenCalledWith({
+      element: 'visual_style_category_tab',
+      questionId: 'tone',
+      styleContext: 'deck',
+      categoryId: 'business',
+    });
+    expect(dialog.querySelectorAll('.qf-visual-card input')).toHaveLength(2);
+    expect(dialog.querySelector('[aria-label="Data briefing"]')).toBeTruthy();
+    expect(dialog.querySelector('[aria-label="Premium pitch"]')).toBeTruthy();
+    fireEvent.click(dialog.querySelector('[aria-label="Premium pitch"]')!);
+    expect(onInteraction).toHaveBeenCalledWith({
+      element: 'visual_style_card',
+      questionId: 'tone',
+      styleId: 'luxury',
+      styleContext: 'deck',
+      source: 'gallery',
+    });
+    expect(customInput.value).toBe('');
+    expect(container.querySelector('.qf-visual-custom-summary')).toBeNull();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'All' }));
+    expect(dialog.querySelectorAll('.qf-visual-card input')).toHaveLength(6);
+
+    fireEvent.click(screen.getByRole('button', { name: /done/i }));
+    expect(screen.queryByRole('dialog', { name: 'Visual direction' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Send answers' }));
+    expect(onSubmit.mock.calls[0]?.[1]).toEqual({ tone: 'luxury' });
   });
 });

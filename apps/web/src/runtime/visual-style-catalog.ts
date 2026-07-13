@@ -1,6 +1,7 @@
 import type { FormOption } from '../artifacts/question-form';
 
 export type VisualStyleContext = 'deck' | 'prototype';
+export type VisualStyleCategory = 'business' | 'editorial' | 'creative' | 'minimal';
 
 export type VisualStyleVariant =
   | 'editorial'
@@ -16,6 +17,7 @@ export interface VisualStyleCard {
   title: string;
   description: string;
   variant: VisualStyleVariant;
+  category: VisualStyleCategory;
   recommended?: boolean;
 }
 
@@ -128,6 +130,7 @@ export function visualStyleCardsForOptions(
     const preset = presets.find(
       (candidate) => candidate.match.test(option.label) || candidate.match.test(option.value),
     );
+    const variant = preset?.variant ?? fallbackVariant(index);
     return {
       value: option.value,
       title: preset?.title ?? option.label,
@@ -137,10 +140,18 @@ export function visualStyleCardsForOptions(
         (context === 'deck'
           ? 'A distinct presentation system for this story.'
           : 'A distinct interface system for this product.'),
-      variant: preset?.variant ?? fallbackVariant(index),
+      variant,
+      category: categoryForVariant(variant),
       recommended: preset?.recommended,
     };
   });
+}
+
+function categoryForVariant(variant: VisualStyleVariant): VisualStyleCategory {
+  if (variant === 'utility' || variant === 'luxury') return 'business';
+  if (variant === 'editorial' || variant === 'human') return 'editorial';
+  if (variant === 'playful' || variant === 'brutalist') return 'creative';
+  return 'minimal';
 }
 
 function fallbackVariant(index: number): VisualStyleVariant {

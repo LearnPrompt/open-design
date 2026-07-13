@@ -46,7 +46,11 @@ import {
   type OdCardBrandBrowserAssist,
 } from "@open-design/contracts";
 import { OdCardView, type BrandBrowserAssistConfirm } from "./OdCard";
-import { parseSubmittedAnswers, QuestionFormView } from "./QuestionForm";
+import {
+  parseSubmittedAnswers,
+  QuestionFormView,
+  type QuestionFormInteraction,
+} from "./QuestionForm";
 import type { VisualStyleContext } from "../runtime/visual-style-catalog";
 import { splitStreamingArtifact, stripArtifact, stripRecoveredHtmlFallbackForDisplay } from "../artifacts/strip";
 import { BRAND_BROWSER_TAB_ID } from "../runtime/brand-browser-bridge";
@@ -2596,11 +2600,44 @@ function FormBlock({
     [analytics.track, form.id, projectId],
   );
 
+  const handleInteraction = useCallback(
+    (interaction: QuestionFormInteraction) => {
+      if (!projectId) return;
+      trackQuestionsFormClick(analytics.track, {
+        page_name: "chat_panel",
+        area: "questions_form",
+        element: interaction.element,
+        form_id: questionsFormTrackingId(form.id),
+        question_id: questionsFormTrackingId(interaction.questionId),
+        project_id: projectId,
+        ...("styleId" in interaction
+          ? { style_id: questionsFormTrackingId(interaction.styleId) }
+          : {}),
+        ...("styleContext" in interaction
+          ? { style_context: interaction.styleContext }
+          : {}),
+        ...("source" in interaction
+          ? { interaction_source: interaction.source }
+          : {}),
+        ...("categoryId" in interaction
+          ? { category_id: interaction.categoryId }
+          : {}),
+        ...("stepIndex" in interaction
+          ? {
+              step_index: interaction.stepIndex,
+              step_count: interaction.stepCount,
+            }
+          : {}),
+      });
+    },
+    [analytics.track, form.id, projectId],
+  );
+
   const handleSubmit = useCallback(
     (
       text: string,
       answers: Record<string, string | string[]>,
-      source: "submit" | "skip",
+      source: "submit" | "skip" | "auto",
     ) => {
       if (projectId) {
         const answeredCount = form.questions.filter((question) => {
@@ -2612,8 +2649,12 @@ function FormBlock({
         trackQuestionsFormClick(analytics.track, {
           page_name: "chat_panel",
           area: "questions_form",
-          element: source,
-          ...(source === "skip" ? { skip_source: "button" as const } : {}),
+          element: source === "submit" ? "submit" : "skip",
+          ...(source === "skip"
+            ? { skip_source: "button" as const }
+            : source === "auto"
+              ? { skip_source: "countdown" as const }
+              : {}),
           answered_count: answeredCount,
           skipped_count: form.questions.length - answeredCount,
           form_id: questionsFormTrackingId(form.id),
@@ -2660,9 +2701,11 @@ function FormBlock({
       form={form}
       interactive={interactive}
       onAnswerChange={handleAnswerChange}
+      onInteraction={handleInteraction}
       onSubmit={onSubmit ? handleSubmit : undefined}
       submitDisabled={submitDisabled}
       visualStyleContext={visualStyleContext}
+      autoContinueOptional
     />
   );
 }
