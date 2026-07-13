@@ -1,8 +1,6 @@
-# Studio Chat 体验升级（二）：Assistant 回复信息架构
+# Studio Chat Assistant 回复信息架构
 
-> 上位方案：[`studio-chat-experience-upgrade.md`](./studio-chat-experience-upgrade.md)
->
-> 关联输入侧方案：[`studio-chat-visual-discovery.md`](./studio-chat-visual-discovery.md)
+> 关联方案：[`studio-chat-visual-discovery.md`](./studio-chat-visual-discovery.md)
 
 ## 1. 现在的问题
 

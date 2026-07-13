@@ -1,14 +1,4 @@
-# Studio Chat 体验升级（一）：视觉化提问与意图确认
-
-> 上位方案：[`studio-chat-experience-upgrade.md`](./studio-chat-experience-upgrade.md)
->
-> 关联输出侧方案：[`studio-chat-response-information-architecture.md`](./studio-chat-response-information-architecture.md)
-
-## 0. 文档定位与范围
-
-本文是「Studio Chat 整体体验升级」的输入侧子方案，负责 Agent 应不应该问、问什么、如何让用户直观选择，以及答案如何在 Chat 中提交和确认。
-
-本文对应 Question Form、视觉选择、Submit / Skip、回答摘要和上下文去重。回复聚合、工具事件、运行状态、异常与审批展示由输出侧子方案单独评审和实现，不扩大本文对应的开发 PR。
+# Studio Chat 提问体验升级
 
 ## 1. 现在的问题
 
