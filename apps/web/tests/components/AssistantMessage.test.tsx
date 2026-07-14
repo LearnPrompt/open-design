@@ -10,6 +10,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AssistantMessage } from '../../src/components/AssistantMessage';
+import * as registry from '../../src/providers/registry';
 import type { ChatMessage, ProjectFile } from '../../src/types';
 
 beforeAll(() => {
@@ -27,10 +28,13 @@ beforeAll(() => {
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
+  window.sessionStorage.clear();
+  vi.restoreAllMocks();
 });
 
 beforeEach(() => {
   window.localStorage.clear();
+  window.sessionStorage.clear();
 });
 
 function baseMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
@@ -419,6 +423,138 @@ describe('AssistantMessage question forms', () => {
     expect(screen.queryByText('What are we making?')).toBeNull();
   });
 
+  it('restores an inline form draft after remounting the conversation', () => {
+    const form = [
+      '<question-form id="draft" title="Quick brief">',
+      JSON.stringify({
+        questions: [{ id: 'audience', label: 'Audience', type: 'text' }],
+      }),
+      '</question-form>',
+    ].join('\n');
+    const props = {
+      message: baseMessage({
+        content: form,
+        events: [{ kind: 'text', text: form } as ChatMessage['events'][number]],
+      }),
+      streaming: false,
+      projectId: 'proj-1',
+      conversationId: 'conv-1',
+      isLast: true,
+      onSubmitQuestionForm: vi.fn(),
+    };
+    const first = render(<AssistantMessage {...props} />);
+    const draftInput = first.container.querySelector('.qf-input');
+    if (!(draftInput instanceof HTMLInputElement)) throw new Error('expected draft input');
+    fireEvent.change(draftInput, {
+      target: { value: 'Product leaders' },
+    });
+    first.unmount();
+
+    const restored = render(<AssistantMessage {...props} />);
+    const restoredInput = restored.container.querySelector('.qf-input');
+    if (!(restoredInput instanceof HTMLInputElement)) throw new Error('expected restored input');
+    expect(restoredInput.value).toBe('Product leaders');
+  });
+
+  it('submits one answer when the send action is triggered twice', () => {
+    const form = [
+      '<question-form id="single-submit" title="Quick brief">',
+      JSON.stringify({
+        questions: [{ id: 'audience', label: 'Audience', type: 'text', required: true }],
+      }),
+      '</question-form>',
+    ].join('\n');
+    const onSubmitQuestionForm = vi.fn();
+    render(
+      <AssistantMessage
+        message={baseMessage({
+          content: form,
+          events: [{ kind: 'text', text: form } as ChatMessage['events'][number]],
+        })}
+        streaming={false}
+        projectId="proj-1"
+        conversationId="conv-1"
+        isLast
+        onSubmitQuestionForm={onSubmitQuestionForm}
+      />,
+    );
+    const audienceInput = document.querySelector('.qf-input');
+    if (!(audienceInput instanceof HTMLInputElement)) throw new Error('expected audience input');
+    fireEvent.change(audienceInput, {
+      target: { value: 'Product leaders' },
+    });
+    const send = screen.getByRole('button', { name: 'Send answers' });
+    fireEvent.click(send);
+    fireEvent.click(send);
+
+    expect(onSubmitQuestionForm).toHaveBeenCalledTimes(1);
+  });
+
+  it('uploads file answers before sending their attachment context', async () => {
+    vi.spyOn(registry, 'uploadProjectFiles').mockResolvedValue({
+      uploaded: [
+        {
+          name: 'mood.png',
+          path: 'uploads/mood.png',
+          kind: 'image',
+          size: 4,
+        },
+      ],
+      failed: [],
+    });
+    const form = [
+      '<question-form id="references" title="References">',
+      JSON.stringify({
+        questions: [
+          {
+            id: 'assets',
+            label: 'Reference assets',
+            type: 'file',
+            required: true,
+            accept: 'image/*',
+          },
+        ],
+      }),
+      '</question-form>',
+    ].join('\n');
+    const onSubmitQuestionForm = vi.fn();
+    const { container } = render(
+      <AssistantMessage
+        message={baseMessage({
+          content: form,
+          events: [{ kind: 'text', text: form } as ChatMessage['events'][number]],
+        })}
+        streaming={false}
+        projectId="proj-1"
+        conversationId="conv-1"
+        isLast
+        onSubmitQuestionForm={onSubmitQuestionForm}
+      />,
+    );
+    const input = container.querySelector('input[type="file"]');
+    if (!(input instanceof HTMLInputElement)) throw new Error('expected file input');
+    const file = new File(['mood'], 'mood.png', { type: 'image/png' });
+    fireEvent.change(input, { target: { files: [file] } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send answers' }));
+
+    await waitFor(() => {
+      expect(onSubmitQuestionForm).toHaveBeenCalledWith(
+        expect.stringContaining('Reference assets: mood.png -> uploads/mood.png'),
+        [expect.objectContaining({ name: 'mood.png', path: 'uploads/mood.png', order: 0 })],
+        {
+          workspaceItems: [
+            {
+              id: 'file:uploads/mood.png',
+              kind: 'file',
+              label: 'mood.png',
+              path: 'uploads/mood.png',
+            },
+          ],
+        },
+      );
+    });
+  });
+
   it('collapses answered questions into a readable inline summary', () => {
     const form = [
       '<question-form id="discovery" title="Quick brief — tailored">',
@@ -499,7 +635,7 @@ describe('AssistantMessage question forms', () => {
       />,
     );
     expect(screen.getByTestId('question-form-summary')).toBeTruthy();
-    expect(screen.queryByTestId('next-step-actions')).toBeNull();
+    expect(screen.getByTestId('next-step-actions')).toBeTruthy();
 
     rerender(
       <AssistantMessage

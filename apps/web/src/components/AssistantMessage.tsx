@@ -6,7 +6,7 @@ import {
   type MarkdownLinkClickHandler,
 } from "../runtime/markdown";
 import { asInProjectFilePath } from "../runtime/in-project-link";
-import { projectFileUrl } from "../providers/registry";
+import { projectFileUrl, uploadProjectFiles } from "../providers/registry";
 import { useAnalytics } from "../analytics/provider";
 import {
   trackAssistantFeedbackButtonClick,
@@ -44,11 +44,14 @@ import {
   type ChatSessionMode,
   type OdCard,
   type OdCardBrandBrowserAssist,
+  type RunContextSelection,
+  type WorkspaceContextItem,
 } from "@open-design/contracts";
 import { OdCardView, type BrandBrowserAssistConfirm } from "./OdCard";
 import {
   parseSubmittedAnswers,
   QuestionFormView,
+  type QuestionFormFileSubmission,
   type QuestionFormInteraction,
 } from "./QuestionForm";
 import type { VisualStyleContext } from "../runtime/visual-style-catalog";
@@ -77,6 +80,7 @@ import { AgentIcon } from "./AgentIcon";
 import { filterImplicitProducedFiles } from "../produced-files";
 import type {
   AgentEvent,
+  ChatAttachment,
   ChatMessage,
   ChatMessageFeedbackChange,
   ChatMessageFeedbackRating,
@@ -93,6 +97,7 @@ type TranslateFn = (
 
 const DISCORD_INVITE_URL = "https://discord.gg/mHAjSMV6gz";
 const viewedInlineQuestionForms = new Set<string>();
+const QUESTION_FORM_DRAFT_STORAGE_PREFIX = "open-design:question-form-draft:";
 
 interface ActionNotice {
   message: string;
@@ -353,7 +358,11 @@ interface Props {
   // The user message that immediately follows this assistant turn, if any.
   // Structured form replies are parsed back into the inline answered summary.
   nextUserContent?: string;
-  onSubmitQuestionForm?: (text: string) => void;
+  onSubmitQuestionForm?: (
+    text: string,
+    attachments?: ChatAttachment[],
+    context?: RunContextSelection,
+  ) => void;
   questionFormSubmitDisabled?: boolean;
   onContinueRemainingTasks?: (todos: TodoItem[]) => void;
   onForkFromMessage?: () => void;
@@ -2382,7 +2391,11 @@ function ProseBlock({
   conversationId?: string | null;
   runId?: string | null;
   projectFileNames?: Set<string>;
-  onSubmitQuestionForm?: (text: string) => void;
+  onSubmitQuestionForm?: (
+    text: string,
+    attachments?: ChatAttachment[],
+    context?: RunContextSelection,
+  ) => void;
   questionFormSubmitDisabled: boolean;
   visualStyleContext?: VisualStyleContext;
   onRequestOpenFile?: (name: string) => void;
@@ -2503,6 +2516,7 @@ function ProseBlock({
             form={seg.form}
             assistantMessageId={assistantMessageId}
             projectId={projectId}
+            conversationId={conversationId}
             nextUserContent={nextUserContent}
             interactive={isLastAssistant}
             onSubmit={onSubmitQuestionForm}
@@ -2533,6 +2547,7 @@ function FormBlock({
   form,
   assistantMessageId,
   projectId,
+  conversationId,
   nextUserContent,
   interactive,
   onSubmit,
@@ -2542,14 +2557,29 @@ function FormBlock({
   form: QuestionForm;
   assistantMessageId: string;
   projectId?: string | null;
+  conversationId?: string | null;
   nextUserContent?: string;
   interactive: boolean;
-  onSubmit?: (text: string) => void;
+  onSubmit?: (
+    text: string,
+    attachments?: ChatAttachment[],
+    context?: RunContextSelection,
+  ) => void;
   submitDisabled: boolean;
   visualStyleContext?: VisualStyleContext;
 }) {
   const t = useT();
   const analytics = useAnalytics();
+  const formKey =
+    projectId && conversationId
+      ? `${projectId}:${conversationId}:${assistantMessageId}:${form.id}`
+      : null;
+  const [draftAnswers, setDraftAnswers] = useState<
+    Record<string, string | string[]> | undefined
+  >(() => readInlineQuestionFormDraft(formKey));
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const submittedFromHistory = useMemo(
     () => (nextUserContent ? parseSubmittedAnswers(form, nextUserContent) : null),
     [form, nextUserContent],
@@ -2565,6 +2595,30 @@ function FormBlock({
       return labels.length > 0 ? [{ label: question.label, value: labels.join(", ") }] : [];
     });
   }, [form, submittedFromHistory]);
+  useEffect(() => {
+    setDraftAnswers(readInlineQuestionFormDraft(formKey));
+    setUploadError(null);
+    submittingRef.current = false;
+    setSubmitting(false);
+  }, [formKey]);
+  useEffect(() => {
+    if (!submittedFromHistory) return;
+    clearInlineQuestionFormDraft(formKey);
+    setDraftAnswers(undefined);
+  }, [formKey, submittedFromHistory]);
+  useEffect(() => {
+    if (!submitting || (!submitDisabled && !submittedFromHistory)) return;
+    submittingRef.current = false;
+    setSubmitting(false);
+  }, [submitDisabled, submittedFromHistory, submitting]);
+  const updateDraftAnswers = useCallback(
+    (answers: Record<string, string | string[]>) => {
+      setUploadError(null);
+      setDraftAnswers(answers);
+      writeInlineQuestionFormDraft(formKey, answers);
+    },
+    [formKey],
+  );
   useEffect(() => {
     if (submittedFromHistory || !projectId) return;
     const occurrenceKey = `${projectId}:${assistantMessageId}:${form.id}`;
@@ -2634,11 +2688,71 @@ function FormBlock({
   );
 
   const handleSubmit = useCallback(
-    (
+    async (
       text: string,
       answers: Record<string, string | string[]>,
       source: "submit" | "skip" | "auto",
+      fileSubmissions: QuestionFormFileSubmission[] = [],
     ) => {
+      if (submittingRef.current) return;
+      submittingRef.current = true;
+      setSubmitting(true);
+      let attachments: ChatAttachment[] = [];
+      let context: RunContextSelection | undefined;
+      let submittedText = text;
+      if (fileSubmissions.length > 0) {
+        if (!projectId) {
+          setUploadError(t("questions.uploadNeedsProject"));
+          submittingRef.current = false;
+          setSubmitting(false);
+          return;
+        }
+        setUploadError(null);
+        const flatFiles = fileSubmissions.flatMap((submission) =>
+          submission.files.map((file) => ({
+            file,
+            questionLabel: submission.questionLabel,
+          })),
+        );
+        const result = await uploadProjectFiles(
+          projectId,
+          flatFiles.map((entry) => entry.file),
+        ).catch((error) => ({
+          uploaded: [],
+          failed: flatFiles.map((entry) => ({
+            name: entry.file.name,
+            error: error instanceof Error ? error.message : String(error),
+          })),
+          error: error instanceof Error ? error.message : String(error),
+        }));
+        if (result.failed.length > 0 || result.uploaded.length !== flatFiles.length) {
+          const failed =
+            result.failed.length ||
+            Math.max(1, flatFiles.length - result.uploaded.length);
+          const uploaded = result.uploaded.length;
+          const detail = result.error ? ` (${result.error})` : "";
+          setUploadError(
+            (uploaded > 0
+              ? t("questions.uploadPartialFailed", { uploaded, failed })
+              : t("questions.uploadFailed", { failed })) + detail,
+          );
+          submittingRef.current = false;
+          setSubmitting(false);
+          return;
+        }
+        attachments = result.uploaded.map((attachment, index) => ({
+          ...attachment,
+          order: index,
+        }));
+        context = {
+          workspaceItems: workspaceItemsForInlineQuestionUploads(attachments),
+        };
+        submittedText = appendInlineQuestionUploadSummary(
+          submittedText,
+          fileSubmissions,
+          attachments,
+        );
+      }
       if (projectId) {
         const answeredCount = form.questions.filter((question) => {
           const value = answers[question.id];
@@ -2661,9 +2775,15 @@ function FormBlock({
           project_id: projectId,
         });
       }
-      onSubmit?.(text);
+      clearInlineQuestionFormDraft(formKey);
+      setDraftAnswers(undefined);
+      if (attachments.length > 0 || context) {
+        onSubmit?.(submittedText, attachments, context);
+      } else {
+        onSubmit?.(submittedText);
+      }
     },
-    [analytics.track, form, onSubmit, projectId],
+    [analytics.track, form, formKey, onSubmit, projectId, t],
   );
 
   if (submittedFromHistory) {
@@ -2697,17 +2817,126 @@ function FormBlock({
   }
 
   return (
-    <QuestionFormView
-      form={form}
-      interactive={interactive}
-      onAnswerChange={handleAnswerChange}
-      onInteraction={handleInteraction}
-      onSubmit={onSubmit ? handleSubmit : undefined}
-      submitDisabled={submitDisabled}
-      visualStyleContext={visualStyleContext}
-      autoContinueOptional
-    />
+    <>
+      <QuestionFormView
+        form={form}
+        interactive={interactive}
+        draftAnswers={draftAnswers}
+        onDraftChange={updateDraftAnswers}
+        onAnswerChange={handleAnswerChange}
+        onInteraction={handleInteraction}
+        onSubmit={onSubmit ? (...args) => void handleSubmit(...args) : undefined}
+        submitDisabled={submitDisabled || submitting}
+        visualStyleContext={visualStyleContext}
+        autoContinueOptional
+      />
+      {uploadError ? (
+        <div className="qf-upload-error" role="alert">
+          {uploadError}
+        </div>
+      ) : null}
+    </>
   );
+}
+
+function workspaceItemsForInlineQuestionUploads(
+  attachments: ChatAttachment[],
+): WorkspaceContextItem[] {
+  return attachments.map((attachment) => ({
+    id: `file:${attachment.path}`,
+    kind: "file",
+    label:
+      attachment.path.split("/").filter(Boolean).pop() || attachment.name,
+    path: attachment.path,
+  }));
+}
+
+function appendInlineQuestionUploadSummary(
+  text: string,
+  fileSubmissions: QuestionFormFileSubmission[],
+  attachments: ChatAttachment[],
+): string {
+  if (attachments.length === 0) return text;
+  const labelsByFileName = new Map<string, string[]>();
+  for (const submission of fileSubmissions) {
+    for (const file of submission.files) {
+      const labels = labelsByFileName.get(file.name) ?? [];
+      labels.push(submission.questionLabel);
+      labelsByFileName.set(file.name, labels);
+    }
+  }
+  const lines = ["[uploaded design files]"];
+  attachments.forEach((attachment, index) => {
+    const labels = labelsByFileName.get(attachment.name) ?? [];
+    const prefix = labels[0] ? `${labels[0]}: ` : "";
+    lines.push(`- ${prefix}${attachment.name} -> ${attachment.path}`);
+    if (labels.length > 1) {
+      lines.push(`  (also selected for: ${labels.slice(1).join(", ")})`);
+    }
+    if (!labels[0]) {
+      lines[lines.length - 1] =
+        `- Attachment ${index + 1}: ${attachment.name} -> ${attachment.path}`;
+    }
+  });
+  return `${text}\n\n${lines.join("\n")}`;
+}
+
+function inlineQuestionFormDraftStorageKey(
+  formKey: string | null,
+): string | null {
+  return formKey ? `${QUESTION_FORM_DRAFT_STORAGE_PREFIX}${formKey}` : null;
+}
+
+function readInlineQuestionFormDraft(
+  formKey: string | null,
+): Record<string, string | string[]> | undefined {
+  const key = inlineQuestionFormDraftStorageKey(formKey);
+  if (!key || typeof window === "undefined") return undefined;
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return undefined;
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const answers: Record<string, string | string[]> = {};
+    for (const [id, value] of Object.entries(parsed)) {
+      if (typeof value === "string") {
+        answers[id] = value;
+      } else if (
+        Array.isArray(value) &&
+        value.every((item) => typeof item === "string")
+      ) {
+        answers[id] = value;
+      }
+    }
+    return Object.keys(answers).length > 0 ? answers : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeInlineQuestionFormDraft(
+  formKey: string | null,
+  answers: Record<string, string | string[]>,
+): void {
+  const key = inlineQuestionFormDraftStorageKey(formKey);
+  if (!key || typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify(answers));
+  } catch {
+    // Form input remains usable when browser storage is unavailable.
+  }
+}
+
+function clearInlineQuestionFormDraft(formKey: string | null): void {
+  const key = inlineQuestionFormDraftStorageKey(formKey);
+  if (!key || typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch {
+    // The submitted answer message remains authoritative.
+  }
 }
 
 function QuestionFormLoading() {

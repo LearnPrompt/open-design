@@ -36,7 +36,12 @@ import { takeComposerSeedFor } from '../state/libraryHandoff';
 import { splitOnQuestionForms } from '../artifacts/question-form';
 import { stripArtifact } from '../artifacts/strip';
 import type { TodoItem } from '../runtime/todos';
-import type { AppliedPluginSnapshot, ChatSessionMode, WorkspaceContextItem } from '@open-design/contracts';
+import type {
+  AppliedPluginSnapshot,
+  ChatSessionMode,
+  RunContextSelection,
+  WorkspaceContextItem,
+} from '@open-design/contracts';
 import type { TrackingProjectKind } from '@open-design/contracts/analytics';
 import {
   DESIGN_SYSTEM_WORKSPACE_DISPLAY_DESCRIPTION,
@@ -524,7 +529,11 @@ interface Props {
   // starters — one-click composer replacements — instead of the generic set.
   onboardingStarterPath?: ProductType | null;
   composerPlaceholder?: string;
-  onSubmitQuestionForm?: (text: string) => void;
+  onSubmitQuestionForm?: (
+    text: string,
+    attachments?: ChatAttachment[],
+    context?: RunContextSelection,
+  ) => void;
   questionFormSubmitDisabled?: boolean;
   onContinueRemainingTasks?: (assistantMessage: ChatMessage, todos: TodoItem[]) => void;
   onAssistantFeedback?: (assistantMessage: ChatMessage, change: ChatMessageFeedbackChange) => void;
@@ -2749,7 +2758,13 @@ export function ChatPane({
 }
 
 interface AssistantCallbacks {
-  onSubmitQuestionForm: ((text: string) => void) | undefined;
+  onSubmitQuestionForm:
+    | ((
+        text: string,
+        attachments?: ChatAttachment[],
+        context?: RunContextSelection,
+      ) => void)
+    | undefined;
   onContinueRemainingTasks:
     | ((assistantMessage: ChatMessage, todos: TodoItem[]) => void)
     | undefined;
@@ -2901,7 +2916,11 @@ function ChatRows({
   onAssistantFeedback?: (message: ChatMessage, change: ChatMessageFeedbackChange) => void;
   forkingMessageId?: string | null;
   t: TranslateFn;
-  onSubmitQuestionForm?: (text: string) => void;
+  onSubmitQuestionForm?: (
+    text: string,
+    attachments?: ChatAttachment[],
+    context?: RunContextSelection,
+  ) => void;
   questionFormSubmitDisabled: boolean;
   scrollContainerRef: MutableRefObject<HTMLDivElement | null>;
 }) {
@@ -2995,7 +3014,12 @@ function ChatRows({
         hasDesignSystemContext={hasActiveDesignSystem || !!activeDesignSystem}
         onSubmitQuestionForm={
           onSubmitQuestionForm
-            ? (text) => assistantCallbacksRef.current.onSubmitQuestionForm?.(text)
+            ? (text, attachments, context) =>
+                assistantCallbacksRef.current.onSubmitQuestionForm?.(
+                  text,
+                  attachments,
+                  context,
+                )
             : undefined
         }
         questionFormSubmitDisabled={questionFormSubmitDisabled}

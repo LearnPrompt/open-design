@@ -559,7 +559,11 @@ export const QuestionFormView = forwardRef<QuestionFormHandle, Props>(function Q
                         : []
                   }
                   disabled={locked}
-                  onSelect={(next) => update(q.id, q.type === 'radio' ? next : [next])}
+                  selectionMode={q.type === 'radio' ? 'single' : 'multiple'}
+                  maxSelections={q.type === 'checkbox' ? q.maxSelections : 1}
+                  onChange={(next) =>
+                    update(q.id, q.type === 'radio' ? (next[0] ?? '') : next)
+                  }
                   onInteraction={onInteraction}
                 />
               ) : null}
@@ -943,7 +947,9 @@ function VisualStylePicker({
   customPlaceholder,
   value,
   disabled,
-  onSelect,
+  selectionMode,
+  maxSelections,
+  onChange,
   onInteraction,
 }: {
   cards: VisualStyleCard[];
@@ -956,7 +962,9 @@ function VisualStylePicker({
   customPlaceholder: string;
   value: string[];
   disabled: boolean;
-  onSelect: (value: string) => void;
+  selectionMode: 'single' | 'multiple';
+  maxSelections?: number;
+  onChange: (value: string[]) => void;
   onInteraction?: (interaction: QuestionFormInteraction) => void;
 }) {
   const t = useT();
@@ -964,7 +972,7 @@ function VisualStylePicker({
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryCategory, setGalleryCategory] =
     useState<VisualStyleGalleryCategory>('all');
-  const selected = cards.find((card) => value.includes(card.value));
+  const selectedCards = cards.filter((card) => value.includes(card.value));
   const customValue =
     value.find((candidate) => !cards.some((card) => card.value === candidate)) ?? '';
   const page = Array.from(
@@ -974,13 +982,15 @@ function VisualStylePicker({
       return cards[cardIndex]!;
     },
   );
-  const selectedIsVisible = selected ? page.some((card) => card.value === selected.value) : false;
+  const selectedOutsidePage = selectedCards.filter(
+    (selected) => !page.some((card) => card.value === selected.value),
+  );
   const compactCards =
-    selected && !selectedIsVisible
-      ? [selected, ...page.filter((card) => card.value !== selected.value)].slice(
-          0,
-          VISUAL_STYLE_PAGE_SIZE,
-        )
+    selectedOutsidePage.length > 0
+      ? [
+          ...selectedOutsidePage,
+          ...page.filter((card) => !value.includes(card.value)),
+        ].slice(0, VISUAL_STYLE_PAGE_SIZE)
       : page;
   const remaining = Math.max(0, cards.length - compactCards.length);
   const galleryCards =
@@ -1006,7 +1016,16 @@ function VisualStylePicker({
       styleContext: context,
       source,
     });
-    onSelect(card.value);
+    if (selectionMode === 'single') {
+      onChange([card.value]);
+      return;
+    }
+    if (value.includes(card.value)) {
+      onChange(value.filter((candidate) => candidate !== card.value));
+      return;
+    }
+    if (maxSelections !== undefined && value.length >= maxSelections) return;
+    onChange([...value, card.value]);
   }
 
   return (
@@ -1039,7 +1058,14 @@ function VisualStylePicker({
               formId={formId}
               questionId={questionId}
               selected={value.includes(card.value)}
-              disabled={disabled}
+              disabled={
+                disabled ||
+                (selectionMode === 'multiple' &&
+                  !value.includes(card.value) &&
+                  maxSelections !== undefined &&
+                  value.length >= maxSelections)
+              }
+              inputType={selectionMode === 'single' ? 'radio' : 'checkbox'}
               onSelect={() => selectStyle(card, 'inline')}
             />
           ))}
@@ -1140,7 +1166,14 @@ function VisualStylePicker({
                       formId={`${formId}-gallery`}
                       questionId={questionId}
                       selected={value.includes(card.value)}
-                      disabled={disabled}
+                      disabled={
+                        disabled ||
+                        (selectionMode === 'multiple' &&
+                          !value.includes(card.value) &&
+                          maxSelections !== undefined &&
+                          value.length >= maxSelections)
+                      }
+                      inputType={selectionMode === 'single' ? 'radio' : 'checkbox'}
                       onSelect={() => selectStyle(card, 'gallery')}
                     />
                   ))}
@@ -1153,8 +1186,26 @@ function VisualStylePicker({
                       className="qf-input"
                       value={customValue}
                       placeholder={customPlaceholder}
-                      disabled={disabled}
-                      onChange={(event) => onSelect(event.target.value)}
+                      disabled={
+                        disabled ||
+                        (selectionMode === 'multiple' &&
+                          !customValue &&
+                          maxSelections !== undefined &&
+                          value.length >= maxSelections)
+                      }
+                      onChange={(event) => {
+                        const presets = value.filter((candidate) =>
+                          cards.some((card) => card.value === candidate),
+                        );
+                        const nextCustom = event.target.value;
+                        onChange(
+                          nextCustom
+                            ? selectionMode === 'single'
+                              ? [nextCustom]
+                              : [...presets, nextCustom]
+                            : presets,
+                        );
+                      }}
                     />
                   </label>
                 ) : null}
@@ -1179,6 +1230,7 @@ function VisualStyleCardView({
   questionId,
   selected,
   disabled,
+  inputType,
   onSelect,
 }: {
   card: VisualStyleCard;
@@ -1187,6 +1239,7 @@ function VisualStyleCardView({
   questionId: string;
   selected: boolean;
   disabled: boolean;
+  inputType: 'radio' | 'checkbox';
   onSelect: () => void;
 }) {
   return (
@@ -1196,7 +1249,7 @@ function VisualStyleCardView({
       title={card.title}
     >
       <input
-        type="radio"
+        type={inputType}
         name={`${formId}-${questionId}`}
         value={card.value}
         checked={selected}

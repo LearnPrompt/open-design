@@ -220,7 +220,6 @@ import { DesignSystemPicker } from './DesignSystemPicker';
 import { PluginDetailsModal } from './PluginDetailsModal';
 import { DesignSystemPreviewModal } from './DesignSystemPreviewModal';
 import { ChatPane } from './ChatPane';
-import type { QuestionFormOpenRequest } from './AssistantMessage';
 import type { ChatSendMeta, ChatSendOutcome } from './ChatComposer';
 import {
   CritiqueTheaterMount,
@@ -8539,9 +8538,12 @@ export function ProjectView({
               initialDraft={chatInitialDraft}
               onboardingStarterPath={onboardingEntryRef.current?.productType ?? null}
               questionFormSubmitDisabled={currentConversationActionDisabled}
-              onSubmitQuestionForm={(text) => {
+              onSubmitQuestionForm={(text, attachments = [], context) => {
                 if (currentConversationActionDisabled) return;
-                void handleSend(text, [], [], { entryFrom: 'question_answer' });
+                void handleSend(text, attachments, [], {
+                  entryFrom: 'question_answer',
+                  ...(context ? { context } : {}),
+                });
               }}
               onContinueRemainingTasks={handleContinueRemainingTasks}
               onAssistantFeedback={handleAssistantFeedback}

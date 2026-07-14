@@ -524,6 +524,7 @@ describe('QuestionFormView', () => {
       (container.querySelector('input[type="radio"][value="display"]') as HTMLInputElement)
         ?.checked,
     ).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Next step' }));
     expect(container.querySelectorAll('input[type="checkbox"]:checked')).toHaveLength(2);
   });
 
@@ -889,11 +890,14 @@ describe('QuestionFormView', () => {
     );
   });
 
-  it('renders artifact-aware visual tone cards and preserves stable option values', () => {
+  it('renders artifact-aware visual tone cards and honors checkbox selection limits', () => {
     const onSubmit = vi.fn();
     render(
       <QuestionFormView
-        form={checkboxObjectForm}
+        form={{
+          ...checkboxObjectForm,
+          questions: [{ ...checkboxObjectForm.questions[0]!, maxSelections: 2 }],
+        }}
         interactive
         visualStyleContext="deck"
         onSubmit={onSubmit}
@@ -906,9 +910,13 @@ describe('QuestionFormView', () => {
     expect(document.querySelector('[data-artifact-type="deck"]')).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText('Editorial narrative'));
+    fireEvent.click(screen.getByLabelText('Soft gradients'));
+    expect((screen.getByLabelText('Product keynote') as HTMLInputElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Send answers' }));
 
-    expect(onSubmit.mock.calls[0]?.[1]).toEqual({ tone: ['editorial'] });
+    expect(onSubmit.mock.calls[0]?.[1]).toEqual({
+      tone: ['editorial', 'soft-gradients'],
+    });
     expect(onSubmit.mock.calls[0]?.[0]).toContain(
       'Editorial / magazine [value: editorial]',
     );
